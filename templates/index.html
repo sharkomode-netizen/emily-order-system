@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EMILY 订单管理系统</title>
+<style>
+:root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --card-hover: #22263a;
+    --border: #2a2e3f;
+    --primary: #6c8cff;
+    --primary-hover: #8ba4ff;
+    --success: #34d399;
+    --error: #f87171;
+    --warning: #fbbf24;
+    --text: #e2e8f0;
+    --text-dim: #94a3b8;
+    --accent: #a78bfa;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+}
+
+.container { max-width: 1100px; margin: 0 auto; padding: 30px 20px; }
+
+.header {
+    text-align: center;
+    margin-bottom: 40px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+}
+.header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--primary), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 8px;
+}
+.header p { color: var(--text-dim); font-size: 14px; }
+.header .version { font-size: 11px; color: var(--text-dim); opacity: 0.5; margin-top: 4px; }
+
+.flash {
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    animation: slideIn 0.3s ease;
+}
+@keyframes slideIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+.flash.success { background: rgba(52, 211, 153, 0.1); border: 1px solid rgba(52, 211, 153, 0.3); color: var(--success); }
+.flash.error { background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.3); color: var(--error); }
+
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 40px; }
+.card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px;
+    transition: all 0.2s;
+}
+.card:hover { border-color: var(--primary); box-shadow: 0 0 20px rgba(108, 140, 255, 0.08); }
+.card-icon { font-size: 36px; margin-bottom: 12px; }
+.card h2 { font-size: 18px; margin-bottom: 6px; }
+.card .desc { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.6; }
+
+.upload-area {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    margin-bottom: 16px;
+}
+.upload-area:hover { border-color: var(--primary); background: rgba(108, 140, 255, 0.03); }
+.upload-area.dragover { border-color: var(--primary); background: rgba(108, 140, 255, 0.08); }
+.upload-area.has-file { border-color: var(--success); border-style: solid; background: rgba(52, 211, 153, 0.05); }
+.upload-area input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.upload-area .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.6; }
+.upload-area .label { font-size: 14px; color: var(--text-dim); }
+.upload-area .formats { font-size: 11px; color: var(--text-dim); margin-top: 4px; opacity: 0.6; }
+
+.file-list {
+    font-size: 13px;
+    color: var(--success);
+    margin-bottom: 12px;
+    min-height: 20px;
+    transition: all 0.2s;
+}
+
+.btn {
+    display: inline-block;
+    padding: 12px 24px;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: center;
+}
+.btn-block { display: block; width: 100%; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover { background: var(--primary-hover); transform: translateY(-1px); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+.btn-primary.loading { background: var(--accent); }
+.btn-danger { background: transparent; color: var(--error); border: 1px solid var(--border); font-size: 12px; padding: 6px 16px; }
+.btn-danger:hover { border-color: var(--error); }
+
+.output-section .section-header {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;
+}
+.output-section .section-header h2 { font-size: 18px; display: flex; align-items: center; gap: 8px; margin: 0; }
+
+.file-table { width: 100%; border-collapse: collapse; }
+.file-table th {
+    text-align: left; padding: 10px 12px; font-size: 12px;
+    color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+}
+.file-table td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
+.file-table tr:hover td { background: var(--card-hover); }
+
+.file-name { color: var(--primary); text-decoration: none; font-weight: 500; }
+.file-name:hover { color: var(--primary-hover); text-decoration: underline; }
+
+.file-actions { display: flex; gap: 8px; }
+.file-actions a, .file-actions button {
+    padding: 4px 12px; border-radius: 6px; font-size: 12px;
+    text-decoration: none; border: 1px solid var(--border);
+    background: transparent; color: var(--text-dim); cursor: pointer; transition: all 0.15s;
+}
+.file-actions a:hover { border-color: var(--primary); color: var(--primary); }
+.file-actions button.del:hover { border-color: var(--error); color: var(--error); }
+
+.badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600;
+}
+.badge-po { background: rgba(108, 140, 255, 0.15); color: var(--primary); }
+.badge-prod { background: rgba(167, 139, 250, 0.15); color: var(--accent); }
+.badge-data { background: rgba(251, 191, 36, 0.15); color: var(--warning); }
+
+.empty {
+    text-align: center; padding: 40px; color: var(--text-dim); font-size: 14px;
+    border: 1px dashed var(--border); border-radius: 12px;
+}
+
+.stats {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px;
+}
+.stat {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; text-align: center;
+}
+.stat .num { font-size: 24px; font-weight: 700; color: var(--primary); }
+.stat .label { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+@media (max-width: 768px) {
+    .cards { grid-template-columns: 1fr; }
+    .stats { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+    <h1>EMILY 订单管理系统</h1>
+    <p>宜美香港有限公司 &mdash; PI转PO &bull; 手写原材料转生产指令单</p>
+    <div class="version">v2.1 &bull; AI-Powered</div>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+{% for category, message in messages %}
+<div class="flash {{ category }}">
+    {% if category == 'success' %}&#10003;{% else %}&#9888;{% endif %}
+    {{ message }}
+</div>
+{% endfor %}
+{% endif %}
+{% endwith %}
+
+{% set po_count = [] %}{% set prod_count = [] %}{% for f in output_files %}{% if f.name.endswith('.xlsx') %}{% if po_count.append(1) %}{% endif %}{% endif %}{% if f.name.endswith('.html') %}{% if prod_count.append(1) %}{% endif %}{% endif %}{% endfor %}
+{% if output_files %}
+<div class="stats">
+    <div class="stat"><div class="num">{{ output_files|length }}</div><div class="label">总文件数</div></div>
+    <div class="stat"><div class="num">{{ po_count|length }}</div><div class="label">PO订单</div></div>
+    <div class="stat"><div class="num">{{ prod_count|length }}</div><div class="label">生产指令单</div></div>
+</div>
+{% endif %}
+
+<div class="cards">
+    <div class="card">
+        <div class="card-icon">&#128196;</div>
+        <h2>PI &rarr; PO 转换</h2>
+        <p class="desc">上传客户PI(形式发票)，自动解析订单数据，生成EMILY格式采购订单(PO) Excel。支持不同客户的PI格式</p>
+        <form method="POST" action="/pi2po" enctype="multipart/form-data" id="piForm">
+            <div class="upload-area" id="piDrop">
+                <input type="file" name="pi_file" accept=".xlsx,.xls,.pdf,.jpg,.jpeg,.png,.webp,.heic" id="piInput" required>
+                <div class="icon">&#128451;</div>
+                <div class="label">拖放或点击上传PI文件</div>
+                <div class="formats">支持 Excel (.xlsx / .xls)、PDF 和图片 (JPG/PNG)</div>
+            </div>
+            <div class="file-list" id="piFiles"></div>
+            <button type="submit" class="btn btn-primary btn-block" id="piBtn" disabled>生成 PO</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <div class="card-icon">&#128247;</div>
+        <h2>原材料 &rarr; 生产指令单</h2>
+        <p class="desc">上传手写采购需求表/原材料清单照片，AI识别后自动生成格式化生产指令单</p>
+        <form method="POST" action="/materials2production" enctype="multipart/form-data" id="matForm">
+            <div class="upload-area" id="matDrop">
+                <input type="file" name="material_files" accept="image/*" multiple id="matInput" required>
+                <div class="icon">&#128248;</div>
+                <div class="label">拖放或点击上传照片(可多选)</div>
+                <div class="formats">支持 JPG / PNG &bull; AI识别手写内容</div>
+            </div>
+            <div class="file-list" id="matFiles"></div>
+            <button type="submit" class="btn btn-primary btn-block" id="matBtn" disabled>生成生产指令单</button>
+        </form>
+    </div>
+</div>
+
+<div class="output-section">
+    <div class="section-header">
+        <h2>&#128194; 已生成文件</h2>
+        {% if output_files %}
+        <form method="POST" action="/clear-all" style="display:inline">
+            <button type="submit" class="btn btn-danger" onclick="return confirm('确定清空所有文件？')">清空全部</button>
+        </form>
+        {% endif %}
+    </div>
+    {% if output_files %}
+    <table class="file-table">
+        <thead>
+            <tr><th>文件名</th><th>类型</th><th>大小</th><th>生成时间</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+        {% for f in output_files %}
+        <tr>
+            <td><a href="/download/{{ f.name }}" class="file-name">{{ f.name }}</a></td>
+            <td>
+                {% if f.name.endswith('.xlsx') %}<span class="badge badge-po">PO</span>
+                {% elif f.name.endswith('.html') %}<span class="badge badge-prod">生产指令单</span>
+                {% elif '_data' in f.name %}<span class="badge badge-data">数据</span>
+                {% endif %}
+            </td>
+            <td>{{ f.size }}</td>
+            <td>{{ f.time }}</td>
+            <td class="file-actions">
+                <a href="/download/{{ f.name }}">下载</a>
+                {% if f.name.endswith('.html') %}<a href="/preview/{{ f.name }}" target="_blank">预览</a>{% endif %}
+                <form method="POST" action="/delete/{{ f.name }}" style="display:inline">
+                    <button type="submit" class="del" onclick="return confirm('确定删除？')">删除</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">暂无生成文件，上传PI或原材料照片开始使用</div>
+    {% endif %}
+</div>
+
+</div>
+
+<script>
+function setupUpload(inputId, listId, btnId, dropId) {
+    const input = document.getElementById(inputId);
+    const list = document.getElementById(listId);
+    const btn = document.getElementById(btnId);
+    const drop = document.getElementById(dropId);
+
+    input.addEventListener('change', () => {
+        const files = Array.from(input.files);
+        if (files.length > 0) {
+            list.textContent = files.map(f => `${f.name} (${(f.size/1024).toFixed(0)}KB)`).join(', ');
+            btn.disabled = false;
+            drop.classList.add('has-file');
+        } else {
+            list.textContent = '';
+            btn.disabled = true;
+            drop.classList.remove('has-file');
+        }
+    });
+}
+
+setupUpload('piInput', 'piFiles', 'piBtn', 'piDrop');
+setupUpload('matInput', 'matFiles', 'matBtn', 'matDrop');
+
+document.querySelectorAll('.upload-area').forEach(area => {
+    area.addEventListener('dragover', e => { e.preventDefault(); area.classList.add('dragover'); });
+    area.addEventListener('dragleave', () => area.classList.remove('dragover'));
+    area.addEventListener('drop', e => {
+        e.preventDefault();
+        area.classList.remove('dragover');
+        const input = area.querySelector('input');
+        input.files = e.dataTransfer.files;
+        input.dispatchEvent(new Event('change'));
+    });
+});
+
+document.querySelectorAll('form[id]').forEach(form => {
+    form.addEventListener('submit', () => {
+        const btn = form.querySelector('button[type="submit"]');
+        btn.disabled = true;
+        btn.classList.add('loading');
+        btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite">&#9881;</span> AI处理中...请稍候';
+    });
+});
+</script>
+<style>@keyframes spin { from{transform:rotate(0)} to{transform:rotate(360deg)} }</style>
+</body>
+</html>
