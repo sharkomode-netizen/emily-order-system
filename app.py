@@ -880,8 +880,9 @@ def _parse_pi_excel_structured(filepath):
         else:
             break
 
-    # === 3. 逐行读取数据，每行保持独立（支持分段单价） ===
-    items = []
+    # === 3. 逐行读取数据，按 style+color+price 分组 ===
+    # 同款同色同价→合并尺码，不同价→保留为独立行（分段单价）
+    groups = {}  # key=(item_no, color, price) -> group dict
     all_sizes_used = set()
     current_item_no = ''
     current_code = ''
@@ -940,15 +941,18 @@ def _parse_pi_excel_structured(filepath):
         color_str = current_color
         color_code = ''
         color_name = color_str
-        m = re.match(r'^(\d+)\s+(.+)$', color_str)
-        if m:
-            color_code = m.group(1)
-            color_name = m.group(2)
+        mc = re.match(r'^(\d+)\s+(.+)$', color_str)
+        if mc:
+            color_code = mc.group(1)
+            color_name = mc.group(2)
 
         # 行金额
         line_amount = float(v_amt) if v_amt and isinstance(v_amt, (int, float)) else price * total_qty
 
-        items.append({
+        # 分组key：同款+同色+同价 合并，不同价保留独立
+        key = (current_item_no, color_str, price)
+        if key not in groups:
+            groups[key] = {
                 'style_code': current_item_no,
                 'style': current_code,
                 'color_code': color_code,
@@ -956,10 +960,19 @@ def _parse_pi_excel_structured(filepath):
                 'color_full': color_str,
                 'description': current_desc or f"{current_item_no} {color_name}".strip(),
                 'price': price,
-                'pieces': total_qty,
-                'sizes': sizes,
-                '_line_amount': line_amount,
-            })
+                'sizes': {},
+                '_line_amount': 0,
+            }
+        # 合并尺码和金额
+        for s, q in sizes.items():
+            groups[key]['sizes'][s] = groups[key]['sizes'].get(s, 0) + q
+        groups[key]['_line_amount'] += line_amount
+
+    # 构建 items
+    items = []
+    for g in groups.values():
+        g['pieces'] = sum(g['sizes'].values())
+        items.append(g)
 
     # 提取条款和银行信息
     terms = {}
