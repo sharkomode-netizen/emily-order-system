@@ -180,7 +180,7 @@ body {
 
 <div class="header">
     <h1>EMILY 订单管理系统</h1>
-    <p>宜美香港有限公司 &mdash; PI转PO &bull; 手写原材料转生产指令单</p>
+    <p>宜美香港有限公司 &mdash; PO转PI &bull; 手写原材料转生产指令单</p>
     <div class="version">v2.1 &bull; AI-Powered</div>
 </div>
 
@@ -199,7 +199,7 @@ body {
 {% if output_files %}
 <div class="stats">
     <div class="stat"><div class="num">{{ output_files|length }}</div><div class="label">总文件数</div></div>
-    <div class="stat"><div class="num">{{ po_count|length }}</div><div class="label">PO订单</div></div>
+    <div class="stat"><div class="num">{{ po_count|length }}</div><div class="label">PI订单</div></div>
     <div class="stat"><div class="num">{{ prod_count|length }}</div><div class="label">生产指令单</div></div>
 </div>
 {% endif %}
@@ -207,17 +207,17 @@ body {
 <div class="cards">
     <div class="card">
         <div class="card-icon">&#128196;</div>
-        <h2>PI &rarr; PO 转换</h2>
-        <p class="desc">上传客户PI(形式发票)，自动解析订单数据，生成EMILY格式采购订单(PO) Excel。支持不同客户的PI格式</p>
+        <h2>PO &rarr; PI 转换</h2>
+        <p class="desc">上传客户PO(采购订单)，自动解析订单数据，生成EMILY格式形式发票(PI) Excel。支持不同客户的PO格式</p>
         <form method="POST" action="/pi2po" enctype="multipart/form-data" id="piForm">
             <div class="upload-area" id="piDrop">
                 <input type="file" name="pi_file" accept=".xlsx,.xls,.pdf,.jpg,.jpeg,.png,.webp,.heic" id="piInput" required>
                 <div class="icon">&#128451;</div>
-                <div class="label">拖放或点击上传PI文件</div>
+                <div class="label">拖放或点击上传PO文件</div>
                 <div class="formats">支持 Excel (.xlsx / .xls)、PDF 和图片 (JPG/PNG)</div>
             </div>
             <div class="file-list" id="piFiles"></div>
-            <button type="submit" class="btn btn-primary btn-block" id="piBtn" disabled>生成 PO</button>
+            <button type="submit" class="btn btn-primary btn-block" id="piBtn" disabled>生成 PI</button>
         </form>
     </div>
 
@@ -257,7 +257,7 @@ body {
         <tr>
             <td><a href="/download/{{ f.name }}" class="file-name">{{ f.name }}</a></td>
             <td>
-                {% if f.name.endswith('.xlsx') %}<span class="badge badge-po">PO</span>
+                {% if f.name.endswith('.xlsx') %}<span class="badge badge-po">PI</span>
                 {% elif f.name.endswith('.html') %}<span class="badge badge-prod">生产指令单</span>
                 {% elif '_data' in f.name %}<span class="badge badge-data">数据</span>
                 {% endif %}
@@ -276,7 +276,7 @@ body {
         </tbody>
     </table>
     {% else %}
-    <div class="empty">暂无生成文件，上传PI或原材料照片开始使用</div>
+    <div class="empty">暂无生成文件，上传PO或原材料照片开始使用</div>
     {% endif %}
 </div>
 
