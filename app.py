@@ -511,11 +511,13 @@ def _parse_pi_generic(filepath):
         if line_amount == 0:
             line_amount = price * qty
 
-        # 分组 key：用 sku（更精确）或 article+name
+        # 分组 key：用 sku 或 article+name，加上 price 以支持分段单价
+        # （同款式不同尺码段可能有不同单价）
+        price_key = round(price, 2) if price > 0 else 0
         if sku_col and current_sku:
-            key = current_sku
+            key = (current_sku, price_key)
         else:
-            key = (current_article, current_name)
+            key = (current_article, current_name, price_key)
 
         if key not in groups:
             groups[key] = {
@@ -720,7 +722,8 @@ Extract ALL data and return pure JSON:
 }}
 
 IMPORTANT:
-- Group sizes by style+color: if article 24091 color "marine" has sizes 19-36 each on separate rows, combine them into ONE item with all sizes
+- SPLIT PRICING: If the same style+color has DIFFERENT unit prices for different size ranges (e.g. sizes 19-25 at $9.30 and sizes 26-38 at $9.80), keep them as SEPARATE items in the array. Do NOT merge them. Each price tier = one item entry with only its sizes.
+- If the same style+color has the SAME price across all sizes, combine into ONE item.
 - size_headers should be the sorted list of ALL unique sizes across all items
 - Split color into color_code (number) and color_name (text) when possible
 - Currency might be EUR or USD - include it
@@ -735,138 +738,233 @@ Return ONLY valid JSON. If rows are omitted, still extract all visible items and
 
 
 def _parse_pi_excel_structured(filepath):
-    """结构化解析MAYORAL格式PI Excel"""
+    """结构化解析多尺码列PI Excel（MAYORAL格式、EMILY自有格式等）
+    支持分段单价：同款不同尺码段不同价格保留为独立行"""
 
     wb = openpyxl.load_workbook(filepath, data_only=True)
     ws = wb.active
 
-    header_text = str(ws.cell(1, 1).value or '')
+    # === 1. 扫描前30行提取头部信息 ===
     order_no = ''
     invoice_no = ''
     date_str = ''
-
-    m = re.search(r'Order No\.?\s*:?\s*(\d+)', header_text)
-    if m:
-        order_no = m.group(1)
-    m = re.search(r'Invoice No\.?\s*:?\s*([\w-]+)', header_text)
-    if m:
-        invoice_no = m.group(1)
-    m = re.search(r'DATE\s*:?\s*([\d-]+\w*[\d-]*)', header_text)
-    if m:
-        date_str = m.group(1)
-
-    # 客户名
     customer_name = ''
-    m = re.search(r'Messers?:?\s*(.+?)(?:\s{3,}|Order)', header_text)
-    if m:
-        customer_name = m.group(1).strip()
-
-    # 客户地址（Messers行后面、C.I.F之前的行）
-    addr_lines = []
-    found_messers = False
-    for line in header_text.split('\n'):
-        line = line.strip().strip('"')
-        if not line:
-            continue
-        if 'Messers' in line:
-            found_messers = True
-            continue
-        if not found_messers:
-            continue
-        if 'C.I.F' in line or 'Tel.' in line or 'Fax' in line or 'http' in line:
-            break
-        clean = re.split(r'\s{5,}', line)[0].strip()
-        if clean and 'PROFORMA' not in clean:
-            addr_lines.append(clean)
-    customer_address = ', '.join(addr_lines[:3]) if addr_lines else ''
-
-    # VAT
+    customer_address = ''
     customer_vat = ''
-    m = re.search(r'C\.I\.F/VAT:?\s*([\w]+)', header_text)
-    if m:
-        customer_vat = m.group(1).strip()
 
-    # 读取初始尺码头（第2行）
-    initial_sizes = []
-    for c in range(1, ws.max_column + 1):
-        v = ws.cell(2, c).value
-        if isinstance(v, (int, float)) and 10 <= v <= 50:
-            initial_sizes.append((c, int(v)))
-
-    # 扫描所有非数据行，收集尺码头信息
-    size_header_rows = {}
-    for r in range(2, ws.max_row + 1):
-        has_data = (ws.cell(r, 2).value and ws.cell(r, 5).value
-                    and isinstance(ws.cell(r, 6).value, (int, float)))
-        if has_data:
-            continue
-        row_sizes = []
-        for c in range(8, ws.max_column + 1):
-            v = ws.cell(r, c).value
-            if isinstance(v, (int, float)) and 10 <= v <= 50:
-                row_sizes.append((c, int(v)))
-        if row_sizes:
-            size_header_rows[r] = row_sizes
-
-    sorted_size_rows = sorted(size_header_rows.keys())
-    items = []
-    all_sizes_used = set()
-
-    for r in range(3, ws.max_row + 1):
-        style_code = ws.cell(r, 2).value
-        style_num = ws.cell(r, 3).value
-        color = ws.cell(r, 4).value
-        desc = ws.cell(r, 5).value
-        price = ws.cell(r, 6).value
-
-        if style_code and desc and price and isinstance(price, (int, float)):
-            data_col_count = 0
-            for c in range(8, ws.max_column + 1):
-                v = ws.cell(r, c).value
-                if v and isinstance(v, (int, float)) and v > 0:
-                    data_col_count += 1
-
-            applicable_sizes = initial_sizes
-            for sr in reversed(sorted_size_rows):
-                if sr < r and len(size_header_rows[sr]) == data_col_count:
-                    applicable_sizes = size_header_rows[sr]
-                    break
-
-            sizes = {}
-            for col_idx, size in applicable_sizes:
-                qty = ws.cell(r, col_idx).value
-                if qty and isinstance(qty, (int, float)) and qty > 0:
-                    sizes[str(size)] = int(qty)
-                    all_sizes_used.add(size)
-
-            total_qty = sum(sizes.values())
-            if total_qty == 0:
+    for r in range(1, min(ws.max_row + 1, 30)):
+        for c in range(1, min(ws.max_column + 1, 15)):
+            v = str(ws.cell(r, c).value or '').strip()
+            if not v:
                 continue
 
-            color_str = str(color).strip() if color else ''
-            color_code = ''
-            color_name = color_str
-            m = re.match(r'^(\d+)\s+(.+)$', color_str)
-            if m:
-                color_code = m.group(1)
-                color_name = m.group(2)
+            # Order No / PO No
+            if not order_no:
+                m = re.search(r"(?:order\s*(?:no\.?|nr\.?)|Bisgaard'?s?\s*order\s*no\.?)\s*:?\s*(\w[\w-]*)", v, re.IGNORECASE)
+                if m:
+                    order_no = m.group(1)
 
-            items.append({
-                'style_code': str(int(style_code) if isinstance(style_code, float) else style_code),
-                'style': str(style_num) if style_num else '',
+            # Invoice No
+            if not invoice_no:
+                m = re.search(r'Invoice\s*No\.?\s*:?\s*([\w-]+)', v, re.IGNORECASE)
+                if m:
+                    invoice_no = m.group(1)
+
+            # Date
+            if not date_str:
+                m = re.search(r'(?:Invoice\s*)?[Dd]ate\s*[:：]\s*(.+?)$', v)
+                if m:
+                    date_str = m.group(1).strip()
+
+            # Bill-to / Messers 客户名
+            if not customer_name:
+                m = re.search(r'(?:Bill[\s-]*to|Messers?)\s*:?\s*$', v, re.IGNORECASE)
+                if m:
+                    # 客户名在下一行
+                    nv = ws.cell(r + 1, c).value
+                    if nv:
+                        customer_name = str(nv).strip()
+                        addr = ws.cell(r + 2, c).value
+                        if addr:
+                            customer_address = str(addr).strip()
+                else:
+                    m = re.search(r'Messers?:?\s*(.+?)(?:\s{3,}|Order)', v)
+                    if m:
+                        customer_name = m.group(1).strip()
+
+            # VAT / CIF
+            if not customer_vat:
+                m = re.search(r'(?:C\.I\.F|VAT)\s*/?\s*(?:VAT)?\s*:?\s*([\w]+)', v, re.IGNORECASE)
+                if m:
+                    customer_vat = m.group(1).strip()
+
+    # === 2. 找尺码头行和列头行 ===
+    # 扫描所有行，找含有连续尺码数字（10-50）的行
+    size_header_rows = {}
+    col_header_row = 0
+    item_col = 0
+    color_col = 0
+    desc_col = 0
+    price_col = 0
+    qty_col = 0
+    amt_col_idx = 0
+    code_col = 0
+
+    for r in range(1, min(ws.max_row + 1, 30)):
+        row_sizes = []
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(r, c).value
+            # 尺码可能是 "19#" 或纯数字19
+            if v is not None:
+                sv = str(v).strip().rstrip('#')
+                try:
+                    num = int(float(sv))
+                    if 10 <= num <= 50:
+                        row_sizes.append((c, num))
+                except (ValueError, TypeError):
+                    pass
+        if len(row_sizes) >= 3:
+            size_header_rows[r] = row_sizes
+
+        # 检测列头行（含 Item/Article/Style/Color/Price 等关键词）
+        row_text = ' '.join(str(ws.cell(r, c).value or '').lower() for c in range(1, ws.max_column + 1))
+        if not col_header_row and ('item' in row_text or 'article' in row_text or 'style' in row_text):
+            if 'color' in row_text or 'material' in row_text or 'desc' in row_text:
+                col_header_row = r
+                # 检测各列位置
+                for c in range(1, ws.max_column + 1):
+                    cv = str(ws.cell(r, c).value or '').lower().strip()
+                    if not cv:
+                        continue
+                    if any(k in cv for k in ['item no', 'article', 'art.']):
+                        item_col = c
+                    elif any(k in cv for k in ['item code', 'sku', 'product code']):
+                        code_col = c
+                    elif any(k in cv for k in ['color', 'colour']):
+                        color_col = c
+                    elif any(k in cv for k in ['material', 'description', 'desc']):
+                        desc_col = c
+                    elif 'price' in cv:
+                        price_col = c
+                    elif cv in ('q\'ty', 'qty', 'quantity', 'pairs', 'pcs'):
+                        qty_col = c
+                    elif cv == 'amount' or 'amount' in cv:
+                        amt_col_idx = c
+
+    if not size_header_rows:
+        return None
+
+    # 取最早的尺码头行作为主尺码映射
+    first_size_row = min(size_header_rows.keys())
+    initial_sizes = size_header_rows[first_size_row]
+
+    # 如果没找到列头行，用MAYORAL默认布局
+    if not col_header_row:
+        item_col = item_col or 2
+        code_col = code_col or 3
+        color_col = color_col or 4
+        desc_col = desc_col or 5
+        price_col = price_col or 6
+    else:
+        item_col = item_col or 1
+        desc_col = desc_col or 4
+        price_col = price_col or 0
+
+    # 数据起始行：列头行或尺码头行之后
+    data_start = max(col_header_row, first_size_row) + 1
+    # 跳过子表头行（如包含 "PRS" "USD" 等）
+    for skip_r in range(data_start, data_start + 3):
+        sv = str(ws.cell(skip_r, price_col).value or '' if price_col else '').lower()
+        if sv in ('', 'usd', 'eur', 'price', '(usd)', '(eur)'):
+            data_start = skip_r + 1
+        else:
+            break
+
+    # === 3. 逐行读取数据，每行保持独立（支持分段单价） ===
+    items = []
+    all_sizes_used = set()
+    current_item_no = ''
+    current_code = ''
+    current_color = ''
+    current_desc = ''
+
+    sorted_size_rows = sorted(size_header_rows.keys())
+
+    for r in range(data_start, ws.max_row + 1):
+        # 更新当前字段（有些行只有尺码数据，item/color在上面的行）
+        v_item = ws.cell(r, item_col).value if item_col else None
+        v_code = ws.cell(r, code_col).value if code_col else None
+        v_color = ws.cell(r, color_col).value if color_col else None
+        v_desc = ws.cell(r, desc_col).value if desc_col else None
+        v_price = ws.cell(r, price_col).value if price_col else None
+        v_qty = ws.cell(r, qty_col).value if qty_col else None
+        v_amt = ws.cell(r, amt_col_idx).value if amt_col_idx else None
+
+        if v_item:
+            current_item_no = str(int(v_item) if isinstance(v_item, float) else v_item).strip()
+        if v_code:
+            current_code = str(v_code).strip()
+        if v_color:
+            current_color = str(v_color).strip()
+        if v_desc:
+            current_desc = str(v_desc).strip()
+
+        # 需要有价格才算数据行
+        if not v_price or not isinstance(v_price, (int, float)):
+            continue
+
+        price = float(v_price)
+        if price <= 0:
+            continue
+
+        # 找适用的尺码头
+        applicable_sizes = initial_sizes
+        for sr in reversed(sorted_size_rows):
+            if sr < r:
+                applicable_sizes = size_header_rows[sr]
+                break
+
+        # 读取各尺码数量
+        sizes = {}
+        for col_idx, size in applicable_sizes:
+            qty = ws.cell(r, col_idx).value
+            if qty and isinstance(qty, (int, float)) and qty > 0:
+                sizes[str(size)] = int(qty)
+                all_sizes_used.add(size)
+
+        total_qty = sum(sizes.values())
+        if total_qty == 0:
+            continue
+
+        # 解析颜色
+        color_str = current_color
+        color_code = ''
+        color_name = color_str
+        m = re.match(r'^(\d+)\s+(.+)$', color_str)
+        if m:
+            color_code = m.group(1)
+            color_name = m.group(2)
+
+        # 行金额
+        line_amount = float(v_amt) if v_amt and isinstance(v_amt, (int, float)) else price * total_qty
+
+        items.append({
+                'style_code': current_item_no,
+                'style': current_code,
                 'color_code': color_code,
                 'color_name': color_name,
                 'color_full': color_str,
-                'description': str(desc).strip() if desc else '',
-                'price': float(price),
+                'description': current_desc or f"{current_item_no} {color_name}".strip(),
+                'price': price,
                 'pieces': total_qty,
                 'sizes': sizes,
+                '_line_amount': line_amount,
             })
 
     # 提取条款和银行信息
     terms = {}
     bank_info = {}
-    for r in range(30, ws.max_row + 1):
+    for r in range(max(data_start, 30), ws.max_row + 1):
         val = str(ws.cell(r, 1).value or '').strip()
         if not val:
             continue
@@ -988,8 +1086,9 @@ Extract ALL data and return pure JSON:
   "size_headers": [19, 20, 21]
 }}
 
-IMPORTANT: For each item, split the color field into color_code (number) and color_name (text).
-For example "68 Marino" → color_code: "68", color_name: "Marino"
+IMPORTANT:
+- SPLIT PRICING: If the same style+color has DIFFERENT unit prices for different size ranges (e.g. sizes 19-25 at $9.30 and sizes 26-38 at $9.80), keep them as SEPARATE items. Do NOT merge.
+- Split color into color_code (number) and color_name (text). e.g. "68 Marino" → color_code: "68", color_name: "Marino"
 
 PI content:
 {text_content[:12000]}
@@ -1052,6 +1151,7 @@ Extract ALL data from the images and return pure JSON:
 
 IMPORTANT:
 - Extract EVERY item visible in the images
+- SPLIT PRICING: If the same style+color has DIFFERENT unit prices for different size ranges, keep them as SEPARATE items. Do NOT merge rows with different prices.
 - Split color into color_code (number) and color_name (text) when possible
 - size_headers = sorted list of ALL unique sizes
 - Return ONLY valid JSON"""
