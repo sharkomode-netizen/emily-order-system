@@ -62,7 +62,7 @@ body {
 .flash.success { background: rgba(52, 211, 153, 0.1); border: 1px solid rgba(52, 211, 153, 0.3); color: var(--success); }
 .flash.error { background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.3); color: var(--error); }
 
-.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 40px; }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-bottom: 40px; }
 .card {
     background: var(--card);
     border: 1px solid var(--border);
@@ -169,10 +169,18 @@ body {
 .stat .num { font-size: 24px; font-weight: 700; color: var(--primary); }
 .stat .label { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 
+@media (max-width: 1024px) {
+    .cards { grid-template-columns: 1fr 1fr; }
+}
 @media (max-width: 768px) {
     .cards { grid-template-columns: 1fr; }
     .stats { grid-template-columns: 1fr; }
 }
+.brand-input {
+    width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 13px; margin-bottom: 12px;
+}
+.brand-input:focus { border-color: var(--primary); outline: none; }
 </style>
 </head>
 <body>
@@ -234,6 +242,23 @@ body {
             </div>
             <div class="file-list" id="matFiles"></div>
             <button type="submit" class="btn btn-primary btn-block" id="matBtn" disabled>生成生产指令单</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <div class="card-icon">&#128200;</div>
+        <h2>报价单 &rarr; COG Overview</h2>
+        <p class="desc">上传Emily报价单Excel，自动展开为SMS COG Overview格式（每颜色&times;每尺码一行）</p>
+        <form method="POST" action="/quotation2cog" enctype="multipart/form-data" id="cogForm">
+            <div class="upload-area" id="cogDrop">
+                <input type="file" name="quotation_file" accept=".xlsx,.xls" id="cogInput" required>
+                <div class="icon">&#128203;</div>
+                <div class="label">拖放或点击上传报价单</div>
+                <div class="formats">支持 Excel (.xlsx / .xls)</div>
+            </div>
+            <div class="file-list" id="cogFiles"></div>
+            <input type="text" name="brand_prefix" class="brand-input" placeholder="品牌前缀（如 bisgaard）" value="bisgaard">
+            <button type="submit" class="btn btn-primary btn-block" id="cogBtn" disabled>生成 COG Overview</button>
         </form>
     </div>
 </div>
@@ -305,6 +330,7 @@ function setupUpload(inputId, listId, btnId, dropId) {
 
 setupUpload('piInput', 'piFiles', 'piBtn', 'piDrop');
 setupUpload('matInput', 'matFiles', 'matBtn', 'matDrop');
+setupUpload('cogInput', 'cogFiles', 'cogBtn', 'cogDrop');
 
 document.querySelectorAll('.upload-area').forEach(area => {
     area.addEventListener('dragover', e => { e.preventDefault(); area.classList.add('dragover'); });

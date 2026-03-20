@@ -1701,6 +1701,285 @@ td.left {{ text-align: left; }}
 
 
 # ============================================================
+# Quotation → COG Overview 转换
+# ============================================================
+def parse_quotation(filepath):
+    """解析 Emily 报价单 Excel，提取所有款式/颜色/尺码段/价格"""
+    if filepath.lower().endswith('.xls') and not filepath.lower().endswith('.xlsx'):
+        filepath = convert_xls_to_xlsx(filepath)
+
+    wb = openpyxl.load_workbook(filepath, data_only=True)
+    ws = wb.active
+
+    # 读取头部信息
+    season = ''
+    vendor = ''
+    date_str = ''
+    for r in range(1, 6):
+        for c in range(1, 5):
+            v = str(ws.cell(r, c).value or '').strip()
+            if not v:
+                continue
+            m = re.search(r'SEASON\s*[:：]\s*(.+)', v, re.IGNORECASE)
+            if m:
+                season = m.group(1).strip()
+            m = re.search(r'VENDOR\s*(?:NAME)?\s*[:：]\s*(.+)', v, re.IGNORECASE)
+            if m:
+                vendor = m.group(1).strip()
+            m = re.search(r'DATE\s*[:：]\s*(.+)', v, re.IGNORECASE)
+            if m:
+                date_str = m.group(1).strip()
+
+    # 找列头行
+    header_row = 0
+    for r in range(1, 10):
+        row_text = ' '.join(str(ws.cell(r, c).value or '').lower() for c in range(1, 11))
+        if 'style' in row_text and 'price' in row_text:
+            header_row = r
+            break
+    if not header_row:
+        return None
+
+    # 自动检测列位置
+    col_map = {}
+    for c in range(1, ws.max_column + 1):
+        cv = str(ws.cell(header_row, c).value or '').lower().strip()
+        if not cv:
+            continue
+        if 'fty' in cv or ('style' in cv and 'no' in cv and 'number' not in cv):
+            col_map['fty'] = c
+        elif 'style name' in cv or cv == 'style name':
+            col_map['name'] = c
+        elif 'style number' in cv or cv == 'style number':
+            col_map['number'] = c
+        elif 'color' in cv:
+            col_map['color'] = c
+        elif 'size range' in cv:
+            col_map['range'] = c
+        elif cv == 'size' or cv == 'sizes':
+            col_map['size'] = c
+        elif 'price' in cv:
+            col_map['price'] = c
+        elif 'remark' in cv:
+            col_map['remark'] = c
+
+    fty_col = col_map.get('fty', 1)
+    name_col = col_map.get('name', 3)
+    number_col = col_map.get('number', 4)
+    color_col = col_map.get('color', 6)
+    range_col = col_map.get('range', 7)
+    size_col = col_map.get('size', 8)
+    price_col = col_map.get('price', 9)
+    remark_col = col_map.get('remark', 10)
+
+    # 解析数据行，构建条目列表
+    entries = []  # 每个entry: {name, number, colors:[], size_range, price_tiers:[{range, price}], remark}
+    current_entry = None
+    last_size_range = ''  # 记录上一个款式的size_range，用于变体继承
+
+    for r in range(header_row + 1, ws.max_row + 1):
+        v_name = ws.cell(r, name_col).value
+        v_number = ws.cell(r, number_col).value
+        v_color = ws.cell(r, color_col).value
+        v_range = ws.cell(r, range_col).value
+        v_size = ws.cell(r, size_col).value
+        v_price = ws.cell(r, price_col).value
+        v_remark = ws.cell(r, remark_col).value
+
+        # 新条目：有 style name + style number
+        if v_name and v_number:
+            # 保存上一个
+            if current_entry and current_entry['price_tiers']:
+                entries.append(current_entry)
+
+            name_str = str(v_name).strip()
+            # 清理换行和多余空格
+            name_str = re.sub(r'\s+', ' ', name_str).strip()
+
+            colors = []
+            if v_color:
+                color_text = str(v_color).strip()
+                for line in color_text.split('\n'):
+                    line = line.strip()
+                    if line:
+                        colors.append(line)
+
+            size_range_str = str(v_range).strip().rstrip('#') if v_range else ''
+            # 没有 size_range 时继承同款式上一个变体的范围
+            if not size_range_str and last_size_range:
+                size_range_str = last_size_range
+            if size_range_str:
+                last_size_range = size_range_str
+
+            current_entry = {
+                'name': name_str,
+                'number': str(v_number).strip() if v_number else '',
+                'colors': colors,
+                'size_range': size_range_str,
+                'price_tiers': [],
+                'remark': str(v_remark).strip() if v_remark else '',
+            }
+
+            # 读取第一个价格段
+            if v_size and v_price:
+                size_tier = str(v_size).strip().rstrip('#')
+                try:
+                    current_entry['price_tiers'].append({
+                        'range': size_tier,
+                        'price': float(v_price),
+                    })
+                except (ValueError, TypeError):
+                    pass
+            elif v_price:
+                # 只有价格没有单独的size列（如只有一个尺码段）
+                try:
+                    current_entry['price_tiers'].append({
+                        'range': size_range_str,
+                        'price': float(v_price),
+                    })
+                except (ValueError, TypeError):
+                    pass
+
+        elif v_size and v_price and current_entry:
+            # 追加价格段到当前条目
+            size_tier = str(v_size).strip().rstrip('#')
+            try:
+                current_entry['price_tiers'].append({
+                    'range': size_tier,
+                    'price': float(v_price),
+                })
+            except (ValueError, TypeError):
+                pass
+
+    # 保存最后一个条目
+    if current_entry and current_entry['price_tiers']:
+        entries.append(current_entry)
+
+    return {
+        'season': season,
+        'vendor': vendor,
+        'date': date_str,
+        'entries': entries,
+    }
+
+
+def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
+    """将报价单展开为 COG Overview Excel（每颜色×每尺码=一行）"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Ark1'
+
+    # Styles
+    normal_font = Font(name='Arial', size=10)
+    bold_font = Font(name='Arial', size=10, bold=True)
+    header_font = Font(name='Arial', size=10, bold=True)
+    thin = Side(style='thin')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal='center', vertical='center')
+    left_align = Alignment(horizontal='left', vertical='center')
+    header_fill = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+
+    # Column widths
+    widths = {'A': 12, 'B': 28, 'C': 12, 'D': 18, 'E': 14, 'F': 8, 'G': 10, 'H': 28}
+    for col, w in widths.items():
+        ws.column_dimensions[col].width = w
+
+    # Header info
+    ws.cell(2, 1, f"SEASON: {quotation_data.get('season', '')}").font = bold_font
+    ws.cell(3, 1, f"VENDOR: {quotation_data.get('vendor', '')}").font = bold_font
+    ws.cell(4, 1, f"DATE:{quotation_data.get('date', '')}").font = bold_font
+
+    # Column headers (row 6)
+    headers = ['PHOTO', 'STYLE NAME', 'STYLE NO.', 'COLOR CODE', 'SIZE RANGE', 'SIZE', 'COG', 'ADDITIONAL COMMENT']
+    for i, h in enumerate(headers, 1):
+        cell = ws.cell(6, i, h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = border
+        cell.alignment = center
+
+    row = 7
+
+    for entry in quotation_data.get('entries', []):
+        style_name = entry['name']
+        style_no = entry['number']
+        size_range = entry['size_range']
+        remark = entry.get('remark', '')
+        price_tiers = entry['price_tiers']
+        colors = entry['colors']
+
+        # 构建 style name with brand prefix
+        full_name = f"{brand_prefix} {style_name}" if brand_prefix else style_name
+
+        # 解析完整尺码范围
+        range_match = re.match(r'(\d+)\s*[-–]\s*(\d+)', size_range)
+        if not range_match:
+            continue
+        range_start = int(range_match.group(1))
+        range_end = int(range_match.group(2))
+        all_sizes = list(range(range_start, range_end + 1))
+
+        # 为每个尺码确定价格（根据price_tiers）
+        size_price_map = {}
+        for tier in price_tiers:
+            tier_match = re.match(r'(\d+)\s*[-–]\s*(\d+)', tier['range'])
+            if tier_match:
+                t_start = int(tier_match.group(1))
+                t_end = int(tier_match.group(2))
+                for s in range(t_start, t_end + 1):
+                    size_price_map[s] = tier['price']
+            else:
+                # 单一尺码段，所有尺码同价
+                for s in all_sizes:
+                    size_price_map[s] = tier['price']
+
+        # 输出格式化的尺码范围（不带#）
+        display_range = f"{range_start}-{range_end}"
+
+        # 每个颜色 × 每个尺码 = 一行
+        for color in colors:
+            for size in all_sizes:
+                price = size_price_map.get(size, price_tiers[0]['price'] if price_tiers else 0)
+
+                # Col A: PHOTO (空)
+                ws.cell(row, 1).border = border
+                # Col B: STYLE NAME
+                ws.cell(row, 2, full_name).font = normal_font
+                ws.cell(row, 2).border = border
+                ws.cell(row, 2).alignment = left_align
+                # Col C: STYLE NO.
+                ws.cell(row, 3, style_no).font = normal_font
+                ws.cell(row, 3).border = border
+                ws.cell(row, 3).alignment = center
+                # Col D: COLOR CODE
+                ws.cell(row, 4, color).font = normal_font
+                ws.cell(row, 4).border = border
+                ws.cell(row, 4).alignment = left_align
+                # Col E: SIZE RANGE
+                ws.cell(row, 5, display_range).font = normal_font
+                ws.cell(row, 5).border = border
+                ws.cell(row, 5).alignment = center
+                # Col F: SIZE
+                ws.cell(row, 6, size).font = normal_font
+                ws.cell(row, 6).border = border
+                ws.cell(row, 6).alignment = center
+                # Col G: COG
+                ws.cell(row, 7, price).font = normal_font
+                ws.cell(row, 7).border = border
+                ws.cell(row, 7).alignment = center
+                # Col H: ADDITIONAL COMMENT
+                if remark:
+                    ws.cell(row, 8, remark).font = normal_font
+                ws.cell(row, 8).border = border
+                ws.cell(row, 8).alignment = left_align
+
+                row += 1
+
+    wb.save(output_path)
+    return row - 7  # 返回数据行数
+
+
+# ============================================================
 # 路由
 # ============================================================
 @app.route('/')
@@ -1811,6 +2090,45 @@ def materials_to_production():
         mat_count = len(material_data.get('materials', []))
         hw_count = len(material_data.get('hardware', []))
         flash(f'生产指令单已生成：{html_name}（{mat_count} 种原材料，{hw_count} 种五金）— 点击预览后可打印为PDF', 'success')
+
+    except Exception as e:
+        flash(f'处理出错：{str(e)}', 'error')
+        traceback.print_exc()
+
+    return redirect(url_for('index'))
+
+
+@app.route('/quotation2cog', methods=['POST'])
+def quotation_to_cog():
+    if 'quotation_file' not in request.files:
+        flash('请上传报价单文件', 'error')
+        return redirect(url_for('index'))
+
+    file = request.files['quotation_file']
+    if not file.filename:
+        flash('请选择文件', 'error')
+        return redirect(url_for('index'))
+
+    filename = safe_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(filepath)
+
+    try:
+        quotation_data = parse_quotation(filepath)
+        if not quotation_data or not quotation_data.get('entries'):
+            flash('无法解析报价单，请检查文件格式', 'error')
+            return redirect(url_for('index'))
+
+        season = quotation_data.get('season', 'SS')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_name = f"{season}_SMS_COG_OVERVIEW--EMILY_{timestamp}.xlsx"
+        output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
+
+        brand_prefix = request.form.get('brand_prefix', 'bisgaard').strip()
+        total_rows = generate_cog_excel(quotation_data, output_path, brand_prefix=brand_prefix)
+
+        entry_count = len(quotation_data['entries'])
+        flash(f'COG Overview 已生成：{output_name}（{entry_count} 个款式，{total_rows} 行数据）', 'success')
 
     except Exception as e:
         flash(f'处理出错：{str(e)}', 'error')
