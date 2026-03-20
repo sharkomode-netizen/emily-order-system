@@ -1,6 +1,6 @@
 """
 EMILY 订单管理系统 v2.1
-- PI → PO 转换：上传客户PI(PDF/Excel .xlsx/.xls)，自动生成EMILY格式PO
+- PO → PI 转换：上传客户PO(PDF/Excel .xlsx/.xls/图片)，自动生成EMILY格式PI
 - 手写原材料 → 生产指令单：上传手写采购需求表照片，AI识别后生成生产指令单
 - 支持多端口运行，可部署到云服务器
 """
@@ -37,6 +37,17 @@ CLAUDE_CLI = os.environ.get('CLAUDE_CLI', '/Users/danny/.nvm/versions/node/v24.1
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 
 
+def _parse_ai_json(text):
+    """从AI返回文本中提取JSON，解析失败返回None"""
+    json_match = re.search(r'\{[\s\S]*\}', text)
+    if json_match:
+        try:
+            return json.loads(json_match.group())
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 def safe_filename(filename):
     """Sanitize filename to prevent path traversal"""
     filename = os.path.basename(filename)
@@ -69,7 +80,7 @@ def call_ai(prompt, images=None, timeout=180):
 
 def _call_api(prompt, images=None, timeout=180):
     from anthropic import Anthropic
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = Anthropic(api_key=ANTHROPIC_API_KEY, timeout=timeout)
 
     content = []
     if images:
@@ -84,12 +95,15 @@ def _call_api(prompt, images=None, timeout=180):
             })
     content.append({"type": "text", "text": prompt})
 
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=8192,
-        messages=[{"role": "user", "content": content}]
-    )
-    return response.content[0].text
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=8192,
+            messages=[{"role": "user", "content": content}]
+        )
+        return response.content[0].text
+    except Exception as e:
+        raise RuntimeError(f"AI API 调用失败: {str(e)[:300]}")
 
 
 def _call_cli(prompt, images=None, timeout=180):
@@ -717,10 +731,7 @@ Excel content (head and tail preserved, some middle rows may be omitted):
 Return ONLY valid JSON. If rows are omitted, still extract all visible items and terms from the tail section."""
 
     result = call_ai(prompt, timeout=300)
-    json_match = re.search(r'\{[\s\S]*\}', result)
-    if json_match:
-        return json.loads(json_match.group())
-    return None
+    return _parse_ai_json(result)
 
 
 def _parse_pi_excel_structured(filepath):
@@ -986,10 +997,7 @@ PI content:
 Return ONLY valid JSON, no other text. If certain fields are not found in the PI, use null."""
 
     result = call_ai(prompt)
-    json_match = re.search(r'\{[\s\S]*\}', result)
-    if json_match:
-        return json.loads(json_match.group())
-    return None
+    return _parse_ai_json(result)
 
 
 def parse_pi_image(image_paths):
@@ -998,7 +1006,7 @@ def parse_pi_image(image_paths):
         images = []
         for path in image_paths:
             ext = os.path.splitext(path)[1].lower()
-            media_map = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp'}
+            media_map = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.heic': 'image/heic'}
             media_type = media_map.get(ext, 'image/jpeg')
             with open(path, 'rb') as f:
                 data = base64.b64encode(f.read()).decode('utf-8')
@@ -1049,10 +1057,7 @@ IMPORTANT:
 - Return ONLY valid JSON"""
 
     result = call_ai(prompt, images=images, timeout=300)
-    json_match = re.search(r'\{[\s\S]*\}', result)
-    if json_match:
-        return json.loads(json_match.group())
-    return None
+    return _parse_ai_json(result)
 
 
 # ============================================================
@@ -1442,10 +1447,7 @@ def parse_handwritten_materials(image_paths):
     else:
         result = call_ai(prompt, images=[{'path': p} for p in image_paths], timeout=600)
 
-    json_match = re.search(r'\{[\s\S]*\}', result)
-    if json_match:
-        return json.loads(json_match.group())
-    return None
+    return _parse_ai_json(result)
 
 
 def generate_production_sheet_html(material_data):
@@ -1606,7 +1608,7 @@ def index():
 @app.route('/pi2po', methods=['POST'])
 def pi_to_po():
     if 'pi_file' not in request.files:
-        flash('请上传PI文件', 'error')
+        flash('请上传PO文件', 'error')
         return redirect(url_for('index'))
 
     file = request.files['pi_file']
@@ -1630,7 +1632,7 @@ def pi_to_po():
             return redirect(url_for('index'))
 
         if not pi_data or not pi_data.get('items'):
-            flash('无法解析PI文件内容，请检查文件格式是否正确', 'error')
+            flash('无法解析PO文件内容，请检查文件格式是否正确', 'error')
             return redirect(url_for('index'))
 
         order_id = pi_data.get('invoice_no') or pi_data.get('order_no') or 'PO'
