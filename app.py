@@ -1196,7 +1196,7 @@ def generate_po_excel(pi_data, output_path):
     row += 1
 
     # === PRODUCT TABLE ===
-    currency = pi_data.get('currency', 'USD')
+    currency = pi_data.get('currency') or 'USD'
     headers = ['No.', 'Style Code', 'Style', 'Color Code', 'Color', 'Description', f'Unit Price\n({currency})', 'Qty']
     for i, h in enumerate(headers, 1):
         cell = ws.cell(row, i, h)
@@ -1284,14 +1284,14 @@ def generate_po_excel(pi_data, output_path):
         ws.cell(row, c).border = border
     ws.cell(row, 7, '').font = Font(name='Arial', size=10, bold=True)
     ws.cell(row, 7).border = border
-    ws.cell(row, 8, pi_data.get('total_pieces', 0)).font = Font(name='Arial', size=10, bold=True)
+    ws.cell(row, 8, pi_data.get('total_pieces') or 0).font = Font(name='Arial', size=10, bold=True)
     ws.cell(row, 8).border = border
     ws.cell(row, 8).alignment = center
     # Size totals
     for i, s in enumerate(sizes):
         col = size_start_col + i
         ws.cell(row, col, '').border = border
-    ws.cell(row, amt_col, pi_data.get('total_amount', 0)).font = Font(name='Arial', size=10, bold=True)
+    ws.cell(row, amt_col, pi_data.get('total_amount') or 0).font = Font(name='Arial', size=10, bold=True)
     ws.cell(row, amt_col).border = border
     ws.cell(row, amt_col).alignment = center
     ws.cell(row, amt_col).number_format = '#,##0.00'
@@ -1647,8 +1647,10 @@ def pi_to_po():
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(pi_data, f, ensure_ascii=False, indent=2)
 
-        currency = pi_data.get('currency', 'USD')
-        flash(f'PO 已生成：{output_name}（共 {pi_data["total_pieces"]:,} 双，{currency} {pi_data["total_amount"]:,.2f}）', 'success')
+        currency = pi_data.get('currency') or 'USD'
+        total_pcs = pi_data.get('total_pieces') or 0
+        total_amt = pi_data.get('total_amount') or 0
+        flash(f'PO 已生成：{output_name}（共 {int(total_pcs):,} 双，{currency} {float(total_amt):,.2f}）', 'success')
 
     except Exception as e:
         flash(f'处理出错：{str(e)}', 'error')
