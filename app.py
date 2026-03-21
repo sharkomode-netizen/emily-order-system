@@ -1704,12 +1704,17 @@ td.left {{ text-align: left; }}
 # Quotation → COG Overview 转换
 # ============================================================
 def parse_quotation(filepath):
-    """解析 Emily 报价单 Excel，提取所有款式/颜色/尺码段/价格"""
+    """解析 Emily 报价单 Excel，提取所有款式/颜色/尺码段/价格及产品图片"""
     if filepath.lower().endswith('.xls') and not filepath.lower().endswith('.xlsx'):
         filepath = convert_xls_to_xlsx(filepath)
 
-    wb = openpyxl.load_workbook(filepath, data_only=True)
+    wb = openpyxl.load_workbook(filepath)
     ws = wb.active
+
+    # 提取图片：按行映射到 style_number
+    # 先建 row -> style_number 映射（需要先扫一遍找到header和数据行）
+    _img_dir = os.path.join(app.config['UPLOAD_FOLDER'], f'quotation_imgs_{int(time.time())}')
+    os.makedirs(_img_dir, exist_ok=True)
 
     # 读取头部信息
     season = ''
@@ -1772,6 +1777,39 @@ def parse_quotation(filepath):
     price_col = col_map.get('price', 9)
     remark_col = col_map.get('remark', 10)
 
+    # 提取图片：row -> style_number -> 保存第一张图
+    row_to_style = {}
+    for r in range(header_row + 1, ws.max_row + 1):
+        v_name = ws.cell(r, name_col).value
+        v_number = ws.cell(r, number_col).value
+        if v_name and v_number:
+            row_to_style[r] = str(v_number).strip()
+
+    style_image_path = {}  # style_number -> saved image path
+    for img in ws._images:
+        try:
+            anc = img.anchor
+            if not hasattr(anc, '_from'):
+                continue
+            excel_row = anc._from.row + 1  # 0-indexed to 1-indexed
+            style_no = row_to_style.get(excel_row)
+            if not style_no or style_no in style_image_path:
+                continue
+            # 保存图片到临时目录
+            from openpyxl.drawing.image import Image as XlImage
+            img_data = img._data()
+            ext = 'jpg'
+            if hasattr(img, 'format') and img.format:
+                ext = img.format.lower()
+            elif img.path and '.' in img.path:
+                ext = img.path.rsplit('.', 1)[-1].lower()
+            img_path = os.path.join(_img_dir, f'{style_no}.{ext}')
+            with open(img_path, 'wb') as f:
+                f.write(img_data)
+            style_image_path[style_no] = img_path
+        except Exception:
+            pass
+
     # 解析数据行，构建条目列表
     entries = []  # 每个entry: {name, number, colors:[], size_range, price_tiers:[{range, price}], remark}
     current_entry = None
@@ -1811,13 +1849,15 @@ def parse_quotation(filepath):
             if size_range_str:
                 last_size_range = size_range_str
 
+            style_no_str = str(v_number).strip() if v_number else ''
             current_entry = {
                 'name': name_str,
-                'number': str(v_number).strip() if v_number else '',
+                'number': style_no_str,
                 'colors': colors,
                 'size_range': size_range_str,
                 'price_tiers': [],
                 'remark': str(v_remark).strip() if v_remark else '',
+                'image_path': style_image_path.get(style_no_str, ''),
             }
 
             # 读取第一个价格段
@@ -1864,7 +1904,10 @@ def parse_quotation(filepath):
 
 
 def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
-    """将报价单展开为 COG Overview Excel（每颜色×每尺码=一行）"""
+    """将报价单展开为 COG Overview Excel（每颜色×每尺码=一行，含产品图片）"""
+    from openpyxl.drawing.image import Image as XlImage
+    from openpyxl.utils import get_column_letter
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Ark1'
@@ -1879,8 +1922,8 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
     left_align = Alignment(horizontal='left', vertical='center')
     header_fill = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
 
-    # Column widths
-    widths = {'A': 12, 'B': 28, 'C': 12, 'D': 18, 'E': 14, 'F': 8, 'G': 10, 'H': 28}
+    # Column widths (A列加宽以容纳图片)
+    widths = {'A': 14, 'B': 28, 'C': 12, 'D': 18, 'E': 14, 'F': 8, 'G': 10, 'H': 28}
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
 
@@ -1899,6 +1942,11 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
         cell.alignment = center
 
     row = 7
+    IMG_HEIGHT = 75  # 图片高度(像素)
+    IMG_WIDTH = 90   # 图片宽度(像素)
+
+    # 记录每个 style_number 的图片是否已插入（同款不同变体共用一张图）
+    inserted_images = set()
 
     for entry in quotation_data.get('entries', []):
         style_name = entry['name']
@@ -1907,6 +1955,7 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
         remark = entry.get('remark', '')
         price_tiers = entry['price_tiers']
         colors = entry['colors']
+        image_path = entry.get('image_path', '')
 
         # 构建 style name with brand prefix
         full_name = f"{brand_prefix} {style_name}" if brand_prefix else style_name
@@ -1936,12 +1985,15 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
         # 输出格式化的尺码范围（不带#）
         display_range = f"{range_start}-{range_end}"
 
+        # 记录当前 entry 起始行，用于插入图片
+        entry_start_row = row
+
         # 每个颜色 × 每个尺码 = 一行
         for color in colors:
             for size in all_sizes:
                 price = size_price_map.get(size, price_tiers[0]['price'] if price_tiers else 0)
 
-                # Col A: PHOTO (空)
+                # Col A: PHOTO (border only, image added below)
                 ws.cell(row, 1).border = border
                 # Col B: STYLE NAME
                 ws.cell(row, 2, full_name).font = normal_font
@@ -1974,6 +2026,17 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
                 ws.cell(row, 8).alignment = left_align
 
                 row += 1
+
+        # 在当前 entry 块的第一行插入图片（同款只插一次）
+        if image_path and os.path.exists(image_path) and style_no not in inserted_images:
+            try:
+                img = XlImage(image_path)
+                img.width = IMG_WIDTH
+                img.height = IMG_HEIGHT
+                ws.add_image(img, f'A{entry_start_row}')
+                inserted_images.add(style_no)
+            except Exception:
+                pass
 
     wb.save(output_path)
     return row - 7  # 返回数据行数
