@@ -164,18 +164,32 @@ body {
 .card form {
     grid-column: 1 / -1;
     margin-top: 16px;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px 16px;
-    align-items: start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    align-items: stretch;
 }
-.card form .upload-area { margin-bottom: 0; }
-.card form .btn-block { align-self: end; }
-.card form .notes-area { grid-column: 1 / -1; }
-.card form .file-list { grid-column: 1 / -1; }
-.card form .format-selector { grid-column: 1 / -1; }
-.card form > div[style*="margin-bottom"] { grid-column: 1; }
-.card form .brand-input { grid-column: 1 / -1; }
+.card form .format-selector { width: 100%; }
+.card form .upload-area {
+    margin-bottom: 0;
+    flex: 1 1 280px;
+    min-height: 100px;
+    padding: 18px 14px;
+}
+.card form .file-list { width: 100%; }
+.card form .notes-area {
+    flex: 1 1 280px;
+    display: flex;
+    flex-direction: column;
+}
+.card form .notes-area textarea { flex: 1; }
+.card form .btn-block {
+    flex: 0 0 180px;
+    align-self: flex-end;
+    height: 46px;
+}
+.card form .brand-input { width: 100%; }
+.card form > div[style*="margin-bottom"] { flex: 1 1 200px; }
 
 /* ===== Upload Area ===== */
 .upload-area {
