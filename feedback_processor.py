@@ -285,7 +285,7 @@ TARGET (正确输出):
             'confidence': confidence,
             'source_feedback_id': fb.get('id'),
             'created': datetime.now().isoformat(),
-            'verified': confidence >= 0.9,  # High confidence = auto-verified
+            'verified': confidence >= 0.7,  # Auto-verified at 0.7+ confidence
             'enabled': True,
         }
 
