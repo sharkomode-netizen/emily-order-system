@@ -8,6 +8,8 @@ import re
 import time
 import logging
 import traceback
+import urllib.request
+import urllib.parse
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FEEDBACK_FILE = os.path.join(BASE_DIR, 'feedback.json')
 FEEDBACK_FILES_DIR = os.path.join(BASE_DIR, 'feedback_files')
 RULES_FILE = os.path.join(BASE_DIR, 'correction_rules.json')
+
+# WhatsApp notification (CallMeBot)
+WHATSAPP_PHONE = os.environ.get('WHATSAPP_PHONE', '+8613528444234')
+WHATSAPP_APIKEY = os.environ.get('WHATSAPP_APIKEY', '')
 
 # Rate limiting
 MAX_PROCESS_PER_HOUR = 5
@@ -32,6 +38,24 @@ DANGER_KEYWORDS = [
 def _is_dangerous(msg):
     lower = msg.lower()
     return any(kw in lower for kw in DANGER_KEYWORDS)
+
+
+def _notify_whatsapp(message):
+    """Send WhatsApp notification via CallMeBot."""
+    if not WHATSAPP_APIKEY:
+        logger.warning("No WHATSAPP_APIKEY, skipping WhatsApp notification")
+        return False
+    try:
+        text = urllib.parse.quote_plus(message[:1000])
+        phone = urllib.parse.quote_plus(WHATSAPP_PHONE)
+        url = f"https://api.callmebot.com/whatsapp.php?phone={phone}&text={text}&apikey={WHATSAPP_APIKEY}"
+        req = urllib.request.Request(url, method='GET')
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            logger.info(f"WhatsApp notification sent: {resp.status}")
+            return resp.status == 200
+    except Exception as e:
+        logger.error(f"WhatsApp notification failed: {e}")
+        return False
 
 
 def _rate_limited():
@@ -168,12 +192,27 @@ def process_single(fb_id):
         if rules:
             from rule_engine import save_rule
             saved_count = 0
+            pending_review = []
             for rule in rules:
                 if save_rule(rule):
                     saved_count += 1
+                    if not rule.get('verified'):
+                        pending_review.append(rule)
+
+            # Notify about low-confidence rules needing review
+            if pending_review:
+                descriptions = '\n'.join(
+                    f"- [{r['confidence']:.0%}] {r.get('description', '')[:80]}"
+                    for r in pending_review
+                )
+                _notify_whatsapp(
+                    f"[EMILY] {len(pending_review)} 条规则待审核 (置信度<70%):\n"
+                    f"{descriptions}\n"
+                    f"反馈#{fb_id}: {msg[:100]}"
+                )
 
             fb['status'] = 'processed'
-            fb['process_log'] = f'Generated {len(rules)} rules, saved {saved_count} new'
+            fb['process_log'] = f'Generated {len(rules)} rules, saved {saved_count} new ({len(pending_review)} pending review)'
             fb['rules_generated'] = [r.get('id') for r in rules]
         else:
             fb['status'] = 'processed'
@@ -259,8 +298,6 @@ TARGET (正确输出):
 
     for diff in differences:
         confidence = diff.get('confidence', 0)
-        if confidence < 0.7:
-            continue
 
         transform = diff.get('transform', '')
         if transform not in ('round', 'strip_prefix', 'replace', 'set_default',
@@ -270,6 +307,7 @@ TARGET (正确输出):
                 continue
 
         rule_id = f"auto_{fb.get('id')}_{len(rules) + 1}_{int(time.time())}"
+        auto_verified = confidence >= 0.7
 
         rule = {
             'id': rule_id,
@@ -285,8 +323,8 @@ TARGET (正确输出):
             'confidence': confidence,
             'source_feedback_id': fb.get('id'),
             'created': datetime.now().isoformat(),
-            'verified': confidence >= 0.7,  # Auto-verified at 0.7+ confidence
-            'enabled': True,
+            'verified': auto_verified,
+            'enabled': auto_verified,
         }
 
         # Add transform params
@@ -358,11 +396,10 @@ def _process_text_feedback(fb):
     rules = []
     for r in parsed.get('rules', []):
         confidence = r.get('confidence', 0)
-        if confidence < 0.7:
-            continue
 
         rule_id = f"auto_{fb.get('id')}_{len(rules) + 1}_{int(time.time())}"
         transform = r.get('transform', '')
+        auto_verified = confidence >= 0.7
 
         rule = {
             'id': rule_id,
@@ -378,8 +415,8 @@ def _process_text_feedback(fb):
             'confidence': confidence,
             'source_feedback_id': fb.get('id'),
             'created': datetime.now().isoformat(),
-            'verified': confidence >= 0.9,
-            'enabled': True,
+            'verified': auto_verified,
+            'enabled': auto_verified,
         }
 
         params = r.get('transform_params', {})
