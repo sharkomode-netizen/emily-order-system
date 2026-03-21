@@ -1196,8 +1196,8 @@ def _format_po_no(pi_data):
     return ''
 
 
-def generate_po_excel(pi_data, output_path):
-    """Generate PO Excel — all in English, complete information"""
+def generate_po_excel(pi_data, output_path, pi_format='PR'):
+    """Generate PO Excel — all in English, complete information. pi_format: customer format code (PR/BIS/MYL/custom)"""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Purchase Order'
@@ -2085,6 +2085,8 @@ def pi_to_po():
         flash('请选择文件', 'error')
         return redirect(url_for('index'))
 
+    pi_format = request.form.get('pi_format', 'PR').strip().upper()
+
     filename = safe_filename(file.filename)
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     file.save(filepath)
@@ -2107,10 +2109,10 @@ def pi_to_po():
         order_id = pi_data.get('invoice_no') or pi_data.get('order_no') or 'PO'
         order_id = re.sub(r'[/\\:*?"<>|]', '-', order_id)  # 清理文件名非法字符
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_name = f"PO_{order_id}_{timestamp}.xlsx"
+        output_name = f"PO_{pi_format}_{order_id}_{timestamp}.xlsx"
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
 
-        generate_po_excel(pi_data, output_path)
+        generate_po_excel(pi_data, output_path, pi_format=pi_format)
 
         json_path = os.path.join(app.config['OUTPUT_FOLDER'], f"PO_{order_id}_{timestamp}_data.json")
         with open(json_path, 'w', encoding='utf-8') as f:
