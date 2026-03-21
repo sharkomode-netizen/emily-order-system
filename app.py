@@ -1510,6 +1510,518 @@ def generate_po_excel(pi_data, output_path, pi_format='PR'):
 
 
 # ============================================================
+# PO → Packing List
+# ============================================================
+def generate_packing_list_excel(pi_data, output_path, fty_order=''):
+    """Generate MYL-style Packing List Excel from parsed PO data.
+    Each item (style+color) gets a block of rows with box distribution.
+    NW/GW left blank for manual fill."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+
+    order_no = pi_data.get('invoice_no') or pi_data.get('order_no') or 'ORDER'
+    ws.title = str(order_no)[:31]
+
+    # Styles
+    normal_font = Font(name='Arial', size=10)
+    bold_font = Font(name='Arial', size=10, bold=True)
+    small_font = Font(name='宋体', size=10, bold=True)
+    title_font = Font(name='Arial', size=12, bold=True)
+    thin = Side(style='thin')
+    medium = Side(style='medium')
+    border_thin = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    # All possible sizes (19-38)
+    all_sizes = list(range(19, 39))
+    # Determine which sizes are actually used
+    used_sizes = set()
+    for item in pi_data.get('items', []):
+        for s, q in item.get('sizes', {}).items():
+            if q and int(q) > 0:
+                try:
+                    used_sizes.add(int(s))
+                except (ValueError, TypeError):
+                    pass
+    if not used_sizes:
+        used_sizes = set(all_sizes)
+    size_list = sorted(used_sizes)
+
+    # Size columns: F(col6) onwards
+    size_col_start = 6  # F
+    size_col_map = {}
+    for i, sz in enumerate(all_sizes):
+        col_idx = size_col_start + i
+        size_col_map[sz] = col_idx
+
+    # Fixed column layout (matches MYL template)
+    # A=FTY ORDER, B=CUST PO, C=FTY NO, D=CUST NO, E=COLOR
+    # F-Y = sizes 19-38
+    # Z=PRS, AA=外箱号, AB=TOTAL CTNS, AC=PER COLOR CTNS, AD=TOTAL PRS, AE=PER COLOR PRS
+    # AF=NW, AG=GW, AH-AL=外箱规格, AM=CBM, AN=PER COLOR CBM
+    # AO=TNW, AP=TGW, AQ=PER COLOR TGW
+    Z = 26   # PRS
+    AA = 27  # 外箱号
+    AB = 28  # TOTAL CTNS
+    AC = 29  # PER COLOR (TOTAL CTNS)
+    AD = 30  # TOTAL PRS
+    AE = 31  # PER COLOR (TOTAL PRS)
+    AF = 32  # NW
+    AG = 33  # GW
+    AH = 34  # 外箱规格 L
+    AI = 35  # *
+    AJ = 36  # W
+    AK = 37  # *
+    AL = 38  # H
+    AM = 39  # CBM
+    AN = 40  # PER COLOR CBM
+    AO = 41  # TNW
+    AP = 42  # TGW
+    AQ = 43  # PER COLOR TGW
+
+    # Column widths
+    col_widths = {'A': 6, 'B': 8, 'C': 7.5, 'D': 10, 'E': 10}
+    for sz in all_sizes:
+        col_letter = openpyxl.utils.get_column_letter(size_col_map[sz])
+        col_widths[col_letter] = 4 if sz in used_sizes else 3
+    col_widths.update({
+        openpyxl.utils.get_column_letter(Z): 6,
+        openpyxl.utils.get_column_letter(AA): 14,
+        openpyxl.utils.get_column_letter(AB): 6.5,
+        openpyxl.utils.get_column_letter(AC): 6,
+        openpyxl.utils.get_column_letter(AD): 11.5,
+        openpyxl.utils.get_column_letter(AE): 8,
+        openpyxl.utils.get_column_letter(AF): 9,
+        openpyxl.utils.get_column_letter(AG): 13,
+        openpyxl.utils.get_column_letter(AH): 3.5,
+        openpyxl.utils.get_column_letter(AI): 2,
+        openpyxl.utils.get_column_letter(AJ): 3.5,
+        openpyxl.utils.get_column_letter(AK): 2,
+        openpyxl.utils.get_column_letter(AL): 3.5,
+        openpyxl.utils.get_column_letter(AM): 8,
+        openpyxl.utils.get_column_letter(AN): 8,
+        openpyxl.utils.get_column_letter(AO): 9.5,
+        openpyxl.utils.get_column_letter(AP): 10,
+        openpyxl.utils.get_column_letter(AQ): 13,
+    })
+    for col, w in col_widths.items():
+        ws.column_dimensions[col].width = w
+
+    # === Row 1: Title ===
+    ws.merge_cells(f'A1:{openpyxl.utils.get_column_letter(AQ)}1')
+    ws.cell(1, 1, f'MYL-PACKING LIST-ORDER {order_no}').font = title_font
+    ws.row_dimensions[1].height = 26
+
+    # === Row 2: Headers ===
+    row2_headers = {
+        1: ('FTY ORDER', normal_font),
+        2: ('客人PO号 CUST PO', normal_font),
+        3: ('型体号 FTY NO.', normal_font),
+        4: ('客人型体号 CUST NO.', normal_font),
+        5: ('颜色 COLOR', normal_font),
+        Z: ('双数 PRS', normal_font),
+        AA: ('外箱号', Font(name='Arial', size=12)),
+        AB: ('总箱数 TOTAL CTNS', normal_font),
+        AC: ('PER COLOR (TOTAL CTNS)', Font(name='Arial', size=8)),
+        AD: ('总双数 TOTAL PRS', normal_font),
+        AE: ('PER COLOR (TOTAL PRS)', normal_font),
+        AF: ('净重 NW(KGS)', Font(name='Arial', size=11)),
+        AG: ('毛重 GW(KGS)', Font(name='Arial', size=11)),
+        AH: ('外箱规格 CM', normal_font),
+        AM: ('立方数\n（CBM)', normal_font),
+        AN: ('PER COLOR (TOTAL CBM)', normal_font),
+        AO: ('总净重 TNW(KGS)', Font(name='Arial', size=9)),
+        AP: ('总毛重 TGW(KGS)', Font(name='Arial', size=9)),
+        AQ: ('每色总毛重 TGW(KGS)', Font(name='Arial', size=9)),
+    }
+    for col_idx, (text, font) in row2_headers.items():
+        c = ws.cell(2, col_idx, text)
+        c.font = font
+        c.alignment = center
+        c.border = border_thin
+    # Merge AH-AL for 外箱规格
+    ws.merge_cells(f'{openpyxl.utils.get_column_letter(AH)}2:{openpyxl.utils.get_column_letter(AL)}2')
+    ws.row_dimensions[2].height = 29
+
+    # === Row 3: Size numbers ===
+    for sz in all_sizes:
+        col = size_col_map[sz]
+        c = ws.cell(3, col, sz)
+        c.font = small_font
+        c.alignment = center
+        c.border = border_thin
+    ws.row_dimensions[3].height = 29
+
+    # === Data rows ===
+    row = 4
+    data_start_row = 4
+    items = pi_data.get('items', [])
+
+    # Group items by style
+    # Keep order but track style groups for FTY ORDER display
+    prev_style = None
+
+    for item_idx, item in enumerate(items):
+        style_code = item.get('style_code', '') or ''
+        color_code = item.get('color_code', '') or ''
+        color_name = item.get('color_name', '') or ''
+        color_display = f'{color_code} {color_name}'.strip() if color_code or color_name else ''
+        description = item.get('description', '') or item.get('style', '') or ''
+
+        # Build fty_no from style_code (remove dots for FTY NO)
+        cust_no = style_code  # e.g. 41.727
+        fty_no = ''  # To be filled manually or derived
+
+        # Get size quantities
+        size_qtys = {}
+        for s, q in item.get('sizes', {}).items():
+            try:
+                sz = int(float(s))
+                qty = int(float(q)) if q else 0
+                if qty > 0:
+                    size_qtys[sz] = qty
+            except (ValueError, TypeError):
+                pass
+
+        if not size_qtys:
+            continue
+
+        # === Box distribution algorithm ===
+        # Standard box capacity: 40 for sizes ≤25, 30 for sizes 26-30, varies for 31+
+        box_rows = []  # list of (size_dict, num_boxes)
+        remainders = {}
+
+        for sz in sorted(size_qtys.keys()):
+            qty = size_qtys[sz]
+            if sz <= 25:
+                cap = 40
+            elif sz <= 30:
+                cap = 30
+            else:
+                cap = 20
+
+            full_boxes = qty // cap
+            remainder = qty % cap
+
+            if full_boxes > 0:
+                box_rows.append(({sz: cap}, full_boxes))
+            if remainder > 0:
+                remainders[sz] = remainder
+
+        # Combine remainders into mixed boxes
+        if remainders:
+            rem_sizes = sorted(remainders.keys())
+            current_box = {}
+            current_total = 0
+            cap = 40  # target per mixed box
+
+            for sz in rem_sizes:
+                qty = remainders[sz]
+                if current_total + qty <= cap:
+                    current_box[sz] = qty
+                    current_total += qty
+                else:
+                    if current_box:
+                        box_rows.append((current_box, 1))
+                    current_box = {sz: qty}
+                    current_total = qty
+            if current_box:
+                box_rows.append((current_box, 1))
+
+        # Write color block
+        block_start = row
+        first_row = True
+
+        for br_idx, (sizes_in_box, num_boxes) in enumerate(box_rows):
+            if first_row:
+                # FTY ORDER (only on first item of each style group or new FTY ORDER)
+                if fty_order:
+                    ws.cell(row, 1, fty_order).font = normal_font
+                    ws.cell(row, 1).border = Border(left=medium, right=thin, top=thin, bottom=thin)
+                # CUST PO
+                po_no = pi_data.get('invoice_no') or pi_data.get('order_no') or ''
+                # Clean PO number
+                po_clean = re.sub(r'^(PO|PV|ORDER)\s*', '', str(po_no), flags=re.IGNORECASE).strip()
+                ws.cell(row, 2, po_clean).font = normal_font
+                ws.cell(row, 2).alignment = center
+                ws.cell(row, 2).border = border_thin
+                # FTY NO
+                ws.cell(row, 3, fty_no).font = normal_font
+                ws.cell(row, 3).alignment = center
+                ws.cell(row, 3).border = border_thin
+                # CUST NO
+                ws.cell(row, 4, cust_no).font = normal_font
+                ws.cell(row, 4).alignment = center
+                ws.cell(row, 4).border = border_thin
+                # COLOR
+                ws.cell(row, 5, color_display).font = normal_font
+                ws.cell(row, 5).alignment = center
+                ws.cell(row, 5).border = border_thin
+                first_row = False
+
+            # Size quantities
+            for sz, qty in sizes_in_box.items():
+                col = size_col_map.get(sz)
+                if col:
+                    ws.cell(row, col, qty).font = normal_font
+                    ws.cell(row, col).alignment = center
+                    ws.cell(row, col).border = border_thin
+
+            # Z: PRS = SUM of sizes
+            z_letter = openpyxl.utils.get_column_letter(Z)
+            f_letter = openpyxl.utils.get_column_letter(size_col_start)
+            y_letter = openpyxl.utils.get_column_letter(size_col_start + len(all_sizes) - 1)
+            ws.cell(row, Z, f'=SUM({f_letter}{row}:{y_letter}{row})').font = normal_font
+            ws.cell(row, Z).alignment = center
+            ws.cell(row, Z).border = border_thin
+
+            # AB: boxes count
+            ab_letter = openpyxl.utils.get_column_letter(AB)
+            ws.cell(row, AB, num_boxes).font = normal_font
+            ws.cell(row, AB).alignment = center
+            ws.cell(row, AB).border = border_thin
+
+            # AD: total PRS = Z * AB
+            ad_letter = openpyxl.utils.get_column_letter(AD)
+            ws.cell(row, AD, f'={z_letter}{row}*{ab_letter}{row}').font = normal_font
+            ws.cell(row, AD).alignment = center
+            ws.cell(row, AD).border = border_thin
+
+            # AH-AL: box dimensions (default 60*40*30, blank for manual fill)
+            ah_letter = openpyxl.utils.get_column_letter(AH)
+            aj_letter = openpyxl.utils.get_column_letter(AJ)
+            al_letter = openpyxl.utils.get_column_letter(AL)
+            ai_letter = openpyxl.utils.get_column_letter(AI)
+            ak_letter = openpyxl.utils.get_column_letter(AK)
+            ws.cell(row, AH, 60).font = normal_font
+            ws.cell(row, AH).alignment = center
+            ws.cell(row, AI, '*').font = normal_font
+            ws.cell(row, AI).alignment = center
+            ws.cell(row, AJ, 40).font = normal_font
+            ws.cell(row, AJ).alignment = center
+            ws.cell(row, AK, '*').font = normal_font
+            ws.cell(row, AK).alignment = center
+            ws.cell(row, AL, 30).font = normal_font
+            ws.cell(row, AL).alignment = center
+
+            # AM: CBM = L*W*H/1000000 * boxes
+            am_letter = openpyxl.utils.get_column_letter(AM)
+            ws.cell(row, AM, f'={ah_letter}{row}*{aj_letter}{row}*{al_letter}{row}/1000000*{ab_letter}{row}').font = normal_font
+            ws.cell(row, AM).alignment = center
+            ws.cell(row, AM).border = border_thin
+
+            # AO: TNW = boxes * NW
+            af_letter = openpyxl.utils.get_column_letter(AF)
+            ag_letter = openpyxl.utils.get_column_letter(AG)
+            ao_letter = openpyxl.utils.get_column_letter(AO)
+            ap_letter = openpyxl.utils.get_column_letter(AP)
+            ws.cell(row, AO, f'={ab_letter}{row}*{af_letter}{row}').font = normal_font
+            ws.cell(row, AO).alignment = center
+            ws.cell(row, AO).border = border_thin
+            # AP: TGW = boxes * GW
+            ws.cell(row, AP, f'={ab_letter}{row}*{ag_letter}{row}').font = normal_font
+            ws.cell(row, AP).alignment = center
+            ws.cell(row, AP).border = border_thin
+
+            row += 1
+
+        block_end = row - 1
+
+        # Add PER COLOR formulas on the first row of the block
+        if block_start <= block_end:
+            # AC: PER COLOR TOTAL CTNS
+            ac_letter = openpyxl.utils.get_column_letter(AC)
+            ws.cell(block_start, AC, f'=SUM({ab_letter}{block_start}:{ab_letter}{block_end})').font = normal_font
+            ws.cell(block_start, AC).alignment = center
+            ws.cell(block_start, AC).border = border_thin
+
+            # AE: PER COLOR TOTAL PRS
+            ae_letter = openpyxl.utils.get_column_letter(AE)
+            ws.cell(block_start, AE, f'=SUM({ad_letter}{block_start}:{ad_letter}{block_end})').font = normal_font
+            ws.cell(block_start, AE).alignment = center
+            ws.cell(block_start, AE).border = border_thin
+
+            # AN: PER COLOR TOTAL CBM
+            an_letter = openpyxl.utils.get_column_letter(AN)
+            ws.cell(block_start, AN, f'=SUM({am_letter}{block_start}:{am_letter}{block_end})').font = normal_font
+            ws.cell(block_start, AN).alignment = center
+            ws.cell(block_start, AN).border = border_thin
+
+            # AQ: PER COLOR TGW
+            aq_letter = openpyxl.utils.get_column_letter(AQ)
+            ws.cell(block_start, AQ, f'=SUM({ap_letter}{block_start}:{ap_letter}{block_end})').font = normal_font
+            ws.cell(block_start, AQ).alignment = center
+            ws.cell(block_start, AQ).border = border_thin
+
+            # Merge cells for multi-row blocks
+            if block_end > block_start:
+                for merge_col in [3, 4, 5]:  # C, D, E
+                    col_l = openpyxl.utils.get_column_letter(merge_col)
+                    ws.merge_cells(f'{col_l}{block_start}:{col_l}{block_end}')
+                # Merge PER COLOR columns
+                for merge_col in [AC, AE, AN, AQ]:
+                    col_l = openpyxl.utils.get_column_letter(merge_col)
+                    ws.merge_cells(f'{col_l}{block_start}:{col_l}{block_end}')
+
+    # === Total row ===
+    total_row = row
+    ab_letter = openpyxl.utils.get_column_letter(AB)
+    ac_letter = openpyxl.utils.get_column_letter(AC)
+    ad_letter = openpyxl.utils.get_column_letter(AD)
+    ae_letter = openpyxl.utils.get_column_letter(AE)
+    am_letter = openpyxl.utils.get_column_letter(AM)
+    an_letter = openpyxl.utils.get_column_letter(AN)
+    ao_letter = openpyxl.utils.get_column_letter(AO)
+    ap_letter = openpyxl.utils.get_column_letter(AP)
+    aq_letter = openpyxl.utils.get_column_letter(AQ)
+
+    for col_idx, col_letter in [(AB, ab_letter), (AC, ac_letter), (AD, ad_letter),
+                                 (AE, ae_letter), (AM, am_letter), (AN, an_letter),
+                                 (AO, ao_letter), (AP, ap_letter), (AQ, aq_letter)]:
+        ws.cell(total_row, col_idx,
+                f'=SUM({col_letter}{data_start_row}:{col_letter}{total_row-1})').font = bold_font
+        ws.cell(total_row, col_idx).alignment = center
+        ws.cell(total_row, col_idx).border = border_thin
+
+    # Print setup
+    try:
+        from openpyxl.worksheet.properties import PageSetupProperties
+        ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.page_setup.orientation = 'landscape'
+    except (ImportError, AttributeError):
+        pass
+
+    wb.save(output_path)
+    return output_path
+
+
+# ============================================================
+# PI → CI (Commercial Invoice)
+# ============================================================
+def generate_ci_from_pi(pi_path, output_path):
+    """Convert PI Excel to CI Excel.
+    - Change title from PROFORMA INVOICE to COMMERCIAL INVOICE
+    - Insert shipping detail rows after header
+    - Add bank info and declaration at bottom
+    """
+    import copy as _copy
+    wb = openpyxl.load_workbook(pi_path)
+    ws = wb.active
+
+    # Step 1: Find and replace title in A1
+    a1_val = ws.cell(1, 1).value or ''
+    if 'PROFORMA' in a1_val.upper():
+        ws.cell(1, 1).value = a1_val.replace('PROFORMA INVOICE', 'COMMERCIAL  INVOICE').replace('Proforma Invoice', 'COMMERCIAL  INVOICE').replace('proforma invoice', 'COMMERCIAL  INVOICE')
+    elif 'INVOICE' not in a1_val.upper():
+        ws.cell(1, 1).value = a1_val + '\nCOMMERCIAL  INVOICE'
+    else:
+        ws.cell(1, 1).value = a1_val.replace('INVOICE', 'INVOICE').replace('PROFORMA', 'COMMERCIAL ')
+
+    # Step 2: Find the row with column headers (Style, Color, Description...)
+    header_row = None
+    for r in range(1, min(ws.max_row + 1, 15)):
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(r, c).value
+            if v and 'Style' in str(v):
+                header_row = r
+                break
+        if header_row:
+            break
+
+    if not header_row:
+        header_row = 2  # fallback
+
+    # Step 3: Insert 5 rows before header_row for shipping details
+    ws.insert_rows(header_row, 5)
+    ship_row = header_row
+
+    shipping_fields = [
+        ('PORT OF LOADING:  ', 'YANGON MYANMAR', 'EX-FACTORY DATE: '),
+        ('PORT OF DISCHARGE:  ', 'ALGECIRAS PORT, SPAIN', 'SHIPPED:  BY SEA'),
+        ('SHIPPED BY: ', '', 'ETD: '),
+        ('CONTAINER NO: ', '', ''),
+        ('DELIVERY TERMS:', 'FOB YANGON PORT, MYANMAR (INCOTERMS 2010)', ''),
+    ]
+    normal_font = Font(name='Arial', size=10)
+    for i, (label, val, right_val) in enumerate(shipping_fields):
+        r = ship_row + i
+        ws.cell(r, 1, label).font = normal_font
+        if val:
+            ws.cell(r, 3, val).font = normal_font
+        if right_val:
+            ws.cell(r, 8, right_val).font = normal_font
+
+    # Extract order number for the last shipping row
+    order_no = ''
+    a1 = ws.cell(1, 1).value or ''
+    import re as _re
+    m = _re.search(r'Order\s*No\.?\s*:?\s*([^\s\n]+)', a1, _re.IGNORECASE)
+    if m:
+        order_no = m.group(1).strip()
+    ws.cell(ship_row + 4, 8, f'Order No.: {order_no}').font = normal_font
+
+    # Step 4: Update DATE in header to current date (or leave as is)
+    # Find "DATE:" in A1 text and potentially update
+    # For now, leave the original date
+
+    # Step 5: Add bank info and declaration at bottom (only if not already present)
+    has_bank = False
+    has_decl = False
+    for r in range(1, ws.max_row + 1):
+        v = ws.cell(r, 1).value
+        if v:
+            vs = str(v)
+            if 'Bank information' in vs or 'Bank name' in vs:
+                has_bank = True
+            if 'exporter' in vs.lower() and 'origin' in vs.lower():
+                has_decl = True
+
+    last_data_row = ws.max_row
+    # Find "Total Order" row
+    total_row = None
+    for r in range(1, last_data_row + 1):
+        for c in range(1, 8):
+            v = ws.cell(r, c).value
+            if v and 'Total Order' in str(v):
+                total_row = r
+    if not total_row:
+        total_row = last_data_row
+
+    # Add SAY TOTAL row (after Total Order, before any existing bank info)
+    if not has_bank:
+        say_row = total_row + 1
+        ws.cell(say_row, 1, 'SAY TOTAL: ').font = normal_font
+
+        bank_row = say_row + 1
+        bank_lines = [
+            '(6) Bank information:',
+            '    Bank name: E.SUN COMMERCIAL BANK LTD., HONG KONG BRANCH',
+            '     Bank address: SUITE 2805, 28F, TOWER 6, THE GATEWAY, 9 CANTON ROAD, TSIMSHATSUI, KOWLOON, HONG KONG',
+            '     Beneficiary Name: EMILY HONG KONG LIMITED',
+            '     Beneficiary address: FLAT/RM 20, 8/F, YALE INDUSTRIAL CENTRE, 61-63 AU PUI WAN STREET, FO TAN, SHATIN, NT, HONG KONG ',
+            f'     SWIFT CODE: {EMILY_INFO["swift"]}    ACCOUNT NO.: {EMILY_INFO["account"]}',
+        ]
+        for i, line in enumerate(bank_lines):
+            ws.cell(bank_row + i, 1, line).font = normal_font
+
+        if not has_decl:
+            decl_row = bank_row + len(bank_lines) + 1
+            decl_lines = [
+                'The exporter BOLLY (HONG KONG) COMPANY LIMITED  (Number of Registered Exporter (MMREX00071) of the ',
+                'products covered by this document declares that, except where otherwise clearly indicated, these products are ',
+                'of Myanmar preferential origin according to rules  of origin of the Generalized System of ',
+                'Preferences of the  European Union and that the origin criterion met is W6402.',
+            ]
+            ws.cell(decl_row, 1, '\n'.join(decl_lines)).font = normal_font
+            ws.cell(decl_row, 1).alignment = Alignment(wrap_text=True, vertical='top')
+
+    wb.save(output_path)
+    return output_path
+
+
+# ============================================================
 # 手写原材料 → 生产指令单
 # ============================================================
 def parse_handwritten_materials(image_paths):
@@ -1958,9 +2470,6 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
     THUMB_H = 85   # 缩略图高度(像素)
     IMG_ROW_HEIGHT = 68  # 图片行行高(点)
 
-    # 记录每个 style_number 的图片是否已插入（同款不同变体共用一张图）
-    inserted_images = set()
-
     for entry in quotation_data.get('entries', []):
         style_name = entry['name']
         style_no = entry['number']
@@ -1998,11 +2507,9 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
         # 输出格式化的尺码范围（不带#）
         display_range = f"{range_start}-{range_end}"
 
-        # 记录当前 entry 起始行，用于插入图片
-        entry_start_row = row
-
-        # 每个颜色 × 每个尺码 = 一行
+        # 每个颜色 × 每个尺码 = 一行，每个颜色的第一行插入图片
         for color in colors:
+            color_start_row = row
             for size in all_sizes:
                 price = size_price_map.get(size, price_tiers[0]['price'] if price_tiers else 0)
 
@@ -2040,17 +2547,16 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
 
                 row += 1
 
-        # 在当前 entry 块的第一行插入图片（同款只插一次）
-        if image_path and os.path.exists(image_path) and style_no not in inserted_images:
-            try:
-                thumb = _make_thumbnail(image_path, THUMB_W, THUMB_H)
-                if thumb and os.path.exists(thumb):
-                    img = XlImage(thumb)
-                    ws.add_image(img, f'A{entry_start_row}')
-                    ws.row_dimensions[entry_start_row].height = IMG_ROW_HEIGHT
-                    inserted_images.add(style_no)
-            except Exception:
-                pass
+            # 在每个颜色块的第一行插入图片
+            if image_path and os.path.exists(image_path):
+                try:
+                    thumb = _make_thumbnail(image_path, THUMB_W, THUMB_H)
+                    if thumb and os.path.exists(thumb):
+                        img = XlImage(thumb)
+                        ws.add_image(img, f'A{color_start_row}')
+                        ws.row_dimensions[color_start_row].height = IMG_ROW_HEIGHT
+                except Exception:
+                    pass
 
     wb.save(output_path)
     return row - 7  # 返回数据行数
@@ -2122,6 +2628,97 @@ def pi_to_po():
         total_pcs = pi_data.get('total_pieces') or 0
         total_amt = pi_data.get('total_amount') or 0
         flash(f'PO 已生成：{output_name}（共 {int(total_pcs):,} 双，{currency} {float(total_amt):,.2f}）', 'success')
+
+    except Exception as e:
+        flash(f'处理出错：{str(e)}', 'error')
+        traceback.print_exc()
+
+    return redirect(url_for('index'))
+
+
+@app.route('/po2packing', methods=['POST'])
+def po_to_packing():
+    if 'po_file' not in request.files:
+        flash('请上传PO文件', 'error')
+        return redirect(url_for('index'))
+
+    file = request.files['po_file']
+    if not file.filename:
+        flash('请选择文件', 'error')
+        return redirect(url_for('index'))
+
+    fty_order = request.form.get('fty_order', '').strip()
+
+    filename = safe_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(filepath)
+
+    try:
+        if filename.lower().endswith(('.xlsx', '.xls')):
+            pi_data = parse_pi_excel(filepath)
+        elif filename.lower().endswith('.pdf'):
+            pi_data = parse_pi_pdf(filepath)
+        elif filename.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic')):
+            pi_data = parse_pi_image([filepath])
+        else:
+            flash('不支持的文件格式，请上传 Excel (.xlsx/.xls)、PDF 或图片', 'error')
+            return redirect(url_for('index'))
+
+        if not pi_data or not pi_data.get('items'):
+            flash('无法解析PO文件内容，请检查文件格式是否正确', 'error')
+            return redirect(url_for('index'))
+
+        order_id = pi_data.get('invoice_no') or pi_data.get('order_no') or 'PO'
+        order_id = re.sub(r'[/\\:*?"<>|]', '-', str(order_id))
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_name = f"PackingList_{order_id}_{timestamp}.xlsx"
+        output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
+
+        generate_packing_list_excel(pi_data, output_path, fty_order=fty_order)
+
+        total_pcs = pi_data.get('total_pieces') or 0
+        item_count = len(pi_data.get('items', []))
+        flash(f'Packing List 已生成：{output_name}（{item_count} 个款式/颜色，共 {int(total_pcs):,} 双）', 'success')
+
+    except Exception as e:
+        flash(f'处理出错：{str(e)}', 'error')
+        traceback.print_exc()
+
+    return redirect(url_for('index'))
+
+
+@app.route('/pi2ci', methods=['POST'])
+def pi_to_ci():
+    if 'ci_file' not in request.files:
+        flash('请上传PI文件', 'error')
+        return redirect(url_for('index'))
+
+    file = request.files['ci_file']
+    if not file.filename:
+        flash('请选择文件', 'error')
+        return redirect(url_for('index'))
+
+    filename = safe_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(filepath)
+
+    try:
+        if not filename.lower().endswith(('.xlsx', '.xls')):
+            flash('CI转换仅支持 Excel (.xlsx/.xls) 格式的PI文件', 'error')
+            return redirect(url_for('index'))
+
+        # Extract order number from filename for output naming
+        order_id = re.sub(r'\.(xlsx|xls)$', '', filename, flags=re.IGNORECASE)
+        order_id = re.sub(r'^(PI|pi)', '', order_id).strip('_- ')
+        if not order_id:
+            order_id = 'ORDER'
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_name = f"CI_{order_id}_{timestamp}.xlsx"
+        output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
+
+        generate_ci_from_pi(filepath, output_path)
+
+        flash(f'CI 已生成：{output_name}', 'success')
 
     except Exception as e:
         flash(f'处理出错：{str(e)}', 'error')

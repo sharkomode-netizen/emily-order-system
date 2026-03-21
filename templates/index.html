@@ -248,7 +248,7 @@ body {
 
 <div class="header">
     <h1>EMILY 订单管理系统</h1>
-    <p>宜美香港有限公司 &mdash; PO转PI &bull; 手写原材料转生产指令单</p>
+    <p>宜美香港有限公司 &mdash; PO转PI &bull; PO转Packing List &bull; 手写原材料转生产指令单</p>
     <div class="version">v2.1 &bull; AI-Powered</div>
 </div>
 
@@ -312,6 +312,42 @@ body {
     </div>
 
     <div class="card">
+        <div class="card-icon">&#128230;</div>
+        <h2>PO &rarr; Packing List</h2>
+        <p class="desc">上传客户PO(采购订单)，自动生成MYL格式装箱单(Packing List) Excel，含箱数分配、CBM计算公式</p>
+        <form method="POST" action="/po2packing" enctype="multipart/form-data" id="packForm">
+            <div style="margin-bottom: 12px;">
+                <label style="font-size: 12px; color: var(--text-dim); display: block; margin-bottom: 4px;">FTY ORDER（工厂订单号，可选）</label>
+                <input type="text" name="fty_order" placeholder="如 MYL-2621" style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; box-sizing: border-box;">
+            </div>
+            <div class="upload-area" id="packDrop">
+                <input type="file" name="po_file" accept=".xlsx,.xls,.pdf,.jpg,.jpeg,.png,.webp,.heic" id="packInput" required>
+                <div class="icon">&#128230;</div>
+                <div class="label">拖放或点击上传PO文件</div>
+                <div class="formats">支持 Excel (.xlsx / .xls)、PDF 和图片 (JPG/PNG)</div>
+            </div>
+            <div class="file-list" id="packFiles"></div>
+            <button type="submit" class="btn btn-primary btn-block" id="packBtn" disabled>生成 Packing List</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <div class="card-icon">&#128179;</div>
+        <h2>PI &rarr; CI 转换</h2>
+        <p class="desc">上传EMILY格式PI(形式发票) Excel，自动转换为Commercial Invoice，含运输信息和银行信息</p>
+        <form method="POST" action="/pi2ci" enctype="multipart/form-data" id="ciForm">
+            <div class="upload-area" id="ciDrop">
+                <input type="file" name="ci_file" accept=".xlsx,.xls" id="ciInput" required>
+                <div class="icon">&#128179;</div>
+                <div class="label">拖放或点击上传PI Excel文件</div>
+                <div class="formats">支持 Excel (.xlsx / .xls)</div>
+            </div>
+            <div class="file-list" id="ciFiles"></div>
+            <button type="submit" class="btn btn-primary btn-block" id="ciBtn" disabled>生成 CI</button>
+        </form>
+    </div>
+
+    <div class="card">
         <div class="card-icon">&#128247;</div>
         <h2>原材料 &rarr; 生产指令单</h2>
         <p class="desc">上传手写采购需求表/原材料清单照片，AI识别后自动生成格式化生产指令单</p>
@@ -364,7 +400,9 @@ body {
         <tr>
             <td><a href="/download/{{ f.name }}" class="file-name">{{ f.name }}</a></td>
             <td>
-                {% if f.name.endswith('.xlsx') %}<span class="badge badge-po">PI</span>
+                {% if f.name.startswith('PackingList_') %}<span class="badge badge-po" style="background:rgba(251,191,36,0.15);color:#f59e0b">装箱单</span>
+                {% elif f.name.startswith('CI_') %}<span class="badge badge-po" style="background:rgba(168,85,247,0.15);color:#a855f7">CI</span>
+                {% elif f.name.endswith('.xlsx') %}<span class="badge badge-po">PI</span>
                 {% elif f.name.endswith('.html') %}<span class="badge badge-prod">生产指令单</span>
                 {% elif '_data' in f.name %}<span class="badge badge-data">数据</span>
                 {% endif %}
@@ -411,6 +449,8 @@ function setupUpload(inputId, listId, btnId, dropId) {
 }
 
 setupUpload('piInput', 'piFiles', 'piBtn', 'piDrop');
+setupUpload('packInput', 'packFiles', 'packBtn', 'packDrop');
+setupUpload('ciInput', 'ciFiles', 'ciBtn', 'ciDrop');
 setupUpload('matInput', 'matFiles', 'matBtn', 'matDrop');
 setupUpload('cogInput', 'cogFiles', 'cogBtn', 'cogDrop');
 
