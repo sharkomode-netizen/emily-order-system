@@ -1903,10 +1903,22 @@ def parse_quotation(filepath):
     }
 
 
+def _make_thumbnail(src_path, max_w=80, max_h=60):
+    """用 Pillow 将图片缩为缩略图，返回临时文件路径"""
+    try:
+        from PIL import Image as PILImage
+        img = PILImage.open(src_path)
+        img.thumbnail((max_w, max_h), PILImage.LANCZOS)
+        thumb_path = src_path.rsplit('.', 1)[0] + '_thumb.jpg'
+        img.convert('RGB').save(thumb_path, 'JPEG', quality=85)
+        return thumb_path
+    except Exception:
+        return None
+
+
 def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
     """将报价单展开为 COG Overview Excel（每颜色×每尺码=一行，含产品图片）"""
     from openpyxl.drawing.image import Image as XlImage
-    from openpyxl.utils import get_column_letter
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1923,7 +1935,7 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
     header_fill = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
 
     # Column widths (A列加宽以容纳图片)
-    widths = {'A': 14, 'B': 28, 'C': 12, 'D': 18, 'E': 14, 'F': 8, 'G': 10, 'H': 28}
+    widths = {'A': 18, 'B': 28, 'C': 12, 'D': 18, 'E': 14, 'F': 8, 'G': 10, 'H': 28}
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
 
@@ -1942,8 +1954,9 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
         cell.alignment = center
 
     row = 7
-    IMG_HEIGHT = 75  # 图片高度(像素)
-    IMG_WIDTH = 90   # 图片宽度(像素)
+    THUMB_W = 120  # 缩略图宽度(像素)
+    THUMB_H = 85   # 缩略图高度(像素)
+    IMG_ROW_HEIGHT = 68  # 图片行行高(点)
 
     # 记录每个 style_number 的图片是否已插入（同款不同变体共用一张图）
     inserted_images = set()
@@ -2030,11 +2043,12 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
         # 在当前 entry 块的第一行插入图片（同款只插一次）
         if image_path and os.path.exists(image_path) and style_no not in inserted_images:
             try:
-                img = XlImage(image_path)
-                img.width = IMG_WIDTH
-                img.height = IMG_HEIGHT
-                ws.add_image(img, f'A{entry_start_row}')
-                inserted_images.add(style_no)
+                thumb = _make_thumbnail(image_path, THUMB_W, THUMB_H)
+                if thumb and os.path.exists(thumb):
+                    img = XlImage(thumb)
+                    ws.add_image(img, f'A{entry_start_row}')
+                    ws.row_dimensions[entry_start_row].height = IMG_ROW_HEIGHT
+                    inserted_images.add(style_no)
             except Exception:
                 pass
 
