@@ -1687,18 +1687,21 @@ def generate_packing_list_excel(pi_data, output_path, fty_order=''):
             continue
 
         # === Box distribution algorithm ===
-        # Standard box capacity: 40 for sizes ≤25, 30 for sizes 26-30, varies for 31+
+        # Box capacity based on shoe size (matches MYL standard)
+        def _box_cap(sz):
+            if sz <= 22: return 40
+            if sz <= 25: return 30
+            if sz <= 27: return 30
+            if sz <= 30: return 28
+            if sz <= 33: return 18
+            return 16  # 34-38
+
         box_rows = []  # list of (size_dict, num_boxes)
         remainders = {}
 
         for sz in sorted(size_qtys.keys()):
             qty = size_qtys[sz]
-            if sz <= 25:
-                cap = 40
-            elif sz <= 30:
-                cap = 30
-            else:
-                cap = 20
+            cap = _box_cap(sz)
 
             full_boxes = qty // cap
             remainder = qty % cap
@@ -1713,7 +1716,7 @@ def generate_packing_list_excel(pi_data, output_path, fty_order=''):
             rem_sizes = sorted(remainders.keys())
             current_box = {}
             current_total = 0
-            cap = 40  # target per mixed box
+            cap = _box_cap(rem_sizes[0]) if rem_sizes else 40  # use first remainder size's capacity
 
             for sz in rem_sizes:
                 qty = remainders[sz]
@@ -1740,8 +1743,12 @@ def generate_packing_list_excel(pi_data, output_path, fty_order=''):
                     ws.cell(row, 1).border = Border(left=medium, right=thin, top=thin, bottom=thin)
                 # CUST PO
                 po_no = pi_data.get('invoice_no') or pi_data.get('order_no') or ''
-                # Clean PO number
                 po_clean = re.sub(r'^(PO|PV|ORDER)\s*', '', str(po_no), flags=re.IGNORECASE).strip()
+                # Try to convert to int for cleaner display
+                try:
+                    po_clean = int(po_clean)
+                except (ValueError, TypeError):
+                    pass
                 ws.cell(row, 2, po_clean).font = normal_font
                 ws.cell(row, 2).alignment = center
                 ws.cell(row, 2).border = border_thin
@@ -1749,8 +1756,12 @@ def generate_packing_list_excel(pi_data, output_path, fty_order=''):
                 ws.cell(row, 3, fty_no).font = normal_font
                 ws.cell(row, 3).alignment = center
                 ws.cell(row, 3).border = border_thin
-                # CUST NO
-                ws.cell(row, 4, cust_no).font = normal_font
+                # CUST NO (try to keep as float like 41.727)
+                try:
+                    cust_no_val = float(cust_no) if cust_no else ''
+                except (ValueError, TypeError):
+                    cust_no_val = cust_no
+                ws.cell(row, 4, cust_no_val).font = normal_font
                 ws.cell(row, 4).alignment = center
                 ws.cell(row, 4).border = border_thin
                 # COLOR
@@ -1905,10 +1916,20 @@ def generate_ci_from_pi(pi_path, output_path):
     - Change title from PROFORMA INVOICE to COMMERCIAL INVOICE
     - Insert shipping detail rows after header
     - Add bank info and declaration at bottom
+    Processes ALL sheets in the workbook.
     """
     import copy as _copy
     wb = openpyxl.load_workbook(pi_path)
-    ws = wb.active
+
+    for ws in wb.worksheets:
+        _convert_sheet_pi_to_ci(ws, wb)
+
+    wb.save(output_path)
+    return output_path
+
+
+def _convert_sheet_pi_to_ci(ws, wb):
+    """Convert a single PI sheet to CI format."""
 
     # Step 1: Find and replace title in A1
     a1_val = ws.cell(1, 1).value or ''
@@ -2016,9 +2037,6 @@ def generate_ci_from_pi(pi_path, output_path):
             ]
             ws.cell(decl_row, 1, '\n'.join(decl_lines)).font = normal_font
             ws.cell(decl_row, 1).alignment = Alignment(wrap_text=True, vertical='top')
-
-    wb.save(output_path)
-    return output_path
 
 
 # ============================================================
