@@ -1197,42 +1197,12 @@ def _format_po_no(pi_data):
     return ''
 
 
-def _log_notes(notes, file_type, output_name):
-    """Log notes to feedback.json for Claude Code to review and potentially improve the system."""
-    if not notes or not notes.strip():
-        return
-    feedbacks = []
-    if os.path.exists(FEEDBACK_FILE):
-        try:
-            with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f:
-                feedbacks = json.load(f)
-        except Exception:
-            feedbacks = []
-    feedbacks.append({
-        'id': len(feedbacks) + 1,
-        'message': notes,
-        'category': 'notes',
-        'source': file_type,
-        'output': output_name,
-        'images': [],
-        'files': [],
-        'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'status': 'pending',
-    })
-    try:
-        with open(FEEDBACK_FILE, 'w', encoding='utf-8') as f:
-            json.dump(feedbacks, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-
 def _apply_notes_to_workbook(wb, output_path, notes, file_type='Excel'):
     """Use AI to apply user notes to a generated workbook.
-    Only processes safe, data-related modifications."""
+    Notes = one-time adjustments for this output only, not system-level changes."""
     if not notes or not notes.strip():
         wb.save(output_path)
         return
-    _log_notes(notes, file_type, os.path.basename(output_path))
     # Save temp version first
     wb.save(output_path)
     # Build a summary of current workbook structure for AI
@@ -2420,17 +2390,17 @@ def parse_quotation(filepath):
         if v_name and v_number:
             row_to_style[r] = str(v_number).strip()
 
-    style_image_path = {}  # style_number -> saved image path
+    # Extract images: map each image to its row number
+    row_image_path = {}  # excel_row -> saved image path
+    style_image_path = {}  # style_number -> saved image path (fallback)
+    _img_counter = 0
     for img in ws._images:
         try:
             anc = img.anchor
             if not hasattr(anc, '_from'):
                 continue
             excel_row = anc._from.row + 1  # 0-indexed to 1-indexed
-            style_no = row_to_style.get(excel_row)
-            if not style_no or style_no in style_image_path:
-                continue
-            # 保存图片到临时目录
+            # Save image
             from openpyxl.drawing.image import Image as XlImage
             img_data = img._data()
             ext = 'jpg'
@@ -2438,10 +2408,15 @@ def parse_quotation(filepath):
                 ext = img.format.lower()
             elif img.path and '.' in img.path:
                 ext = img.path.rsplit('.', 1)[-1].lower()
-            img_path = os.path.join(_img_dir, f'{style_no}.{ext}')
+            _img_counter += 1
+            img_path = os.path.join(_img_dir, f'row_{excel_row}_{_img_counter}.{ext}')
             with open(img_path, 'wb') as f:
                 f.write(img_data)
-            style_image_path[style_no] = img_path
+            row_image_path[excel_row] = img_path
+            # Also map to style if this row has a style
+            style_no = row_to_style.get(excel_row)
+            if style_no and style_no not in style_image_path:
+                style_image_path[style_no] = img_path
         except Exception:
             pass
 
@@ -2485,14 +2460,30 @@ def parse_quotation(filepath):
                 last_size_range = size_range_str
 
             style_no_str = str(v_number).strip() if v_number else ''
+            # Build per-color image mapping
+            color_images = {}
+            # Check if this row or nearby rows have images
+            row_img = row_image_path.get(r, '')
+            if row_img:
+                # Assign this image to all colors in this cell
+                for c_name in colors:
+                    color_images[c_name] = row_img
+            else:
+                # Fallback to style-level image
+                fallback = style_image_path.get(style_no_str, '')
+                if fallback:
+                    for c_name in colors:
+                        color_images[c_name] = fallback
             current_entry = {
                 'name': name_str,
                 'number': style_no_str,
                 'colors': colors,
+                'color_images': color_images,
                 'size_range': size_range_str,
                 'price_tiers': [],
                 'remark': str(v_remark).strip() if v_remark else '',
                 'image_path': style_image_path.get(style_no_str, ''),
+                'source_row': r,
             }
 
             # 读取第一个价格段
@@ -2601,6 +2592,7 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard', not
         price_tiers = entry['price_tiers']
         colors = entry['colors']
         image_path = entry.get('image_path', '')
+        color_images = entry.get('color_images', {})
 
         # 构建 style name with brand prefix
         full_name = f"{brand_prefix} {style_name}" if brand_prefix else style_name
@@ -2670,10 +2662,11 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard', not
 
                 row += 1
 
-            # 在每个颜色块的第一行插入图片
-            if image_path and os.path.exists(image_path):
+            # 在每个颜色块的第一行插入对应颜色的图片
+            color_img = color_images.get(color, image_path)
+            if color_img and os.path.exists(color_img):
                 try:
-                    thumb = _make_thumbnail(image_path, THUMB_W, THUMB_H)
+                    thumb = _make_thumbnail(color_img, THUMB_W, THUMB_H)
                     if thumb and os.path.exists(thumb):
                         img = XlImage(thumb)
                         ws.add_image(img, f'A{color_start_row}')
