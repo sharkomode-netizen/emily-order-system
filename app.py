@@ -14,8 +14,20 @@ import sys
 import io
 import traceback
 import time
+import logging
+import signal
 from datetime import datetime
 from pathlib import Path
+
+# Logging setup
+_log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.log')
+from logging.handlers import RotatingFileHandler
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+_fh = RotatingFileHandler(_log_file, maxBytes=5*1024*1024, backupCount=2, encoding='utf-8')
+_fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+logger.addHandler(_fh)
+logger.addHandler(logging.StreamHandler())
 from flask import Flask, render_template, request, redirect, url_for, flash, send_file, jsonify, Response
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
@@ -40,10 +52,12 @@ ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 
 def _parse_ai_json(text):
     """从AI返回文本中提取JSON，解析失败返回None"""
-    json_match = re.search(r'\{[\s\S]*\}', text)
-    if json_match:
+    # Find first { and last } using string methods (avoids regex backtracking)
+    start = text.find('{')
+    end = text.rfind('}')
+    if start >= 0 and end > start:
         try:
-            return json.loads(json_match.group())
+            return json.loads(text[start:end + 1])
         except json.JSONDecodeError:
             return None
     return None
@@ -57,7 +71,7 @@ def safe_filename(filename):
 
 
 def cleanup_uploads(max_age_hours=24):
-    """Clean up old upload files"""
+    """Clean up old upload files and temp image directories"""
     now = time.time()
     upload_dir = app.config['UPLOAD_FOLDER']
     for f in os.listdir(upload_dir):
@@ -67,6 +81,16 @@ def cleanup_uploads(max_age_hours=24):
                 os.remove(fpath)
             except OSError:
                 pass
+    # Clean up temp quotation image directories
+    import shutil
+    for f in os.listdir(BASE_DIR):
+        if f.startswith('quotation_imgs_') and os.path.isdir(os.path.join(BASE_DIR, f)):
+            fpath = os.path.join(BASE_DIR, f)
+            if (now - os.path.getmtime(fpath)) > 3600:  # 1 hour
+                try:
+                    shutil.rmtree(fpath)
+                except OSError:
+                    pass
 
 
 # ============================================================
@@ -220,7 +244,7 @@ def parse_pi_excel(filepath):
         if result and result.get('items'):
             return result
     except Exception:
-        traceback.print_exc()
+        logger.error(f"Error: {e}", exc_info=True)
 
     # 都失败了才用AI（最慢）
     return _parse_pi_excel_ai(filepath)
@@ -1266,17 +1290,25 @@ ws = wb.active
                       '__import__', 'open(', 'system(', 'popen(', 'remove(', 'unlink(']
         if any(d in code for d in dangerous):
             return
-        # Execute in restricted namespace
+        # Execute in restricted namespace with timeout
         safe_globals = {
             'wb': wb, 'openpyxl': openpyxl,
             'Font': Font, 'Alignment': Alignment, 'Border': Border,
             'Side': Side, 'PatternFill': PatternFill,
         }
-        exec(code, safe_globals)
-        wb.save(output_path)
-    except Exception:
+        def _timeout_handler(signum, frame):
+            raise TimeoutError("Notes execution timed out")
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(10)  # 10 second max
+        try:
+            exec(code, safe_globals)
+            wb.save(output_path)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+    except Exception as e:
         # If AI modification fails, keep original file
-        pass
+        logger.warning(f"Notes application failed: {e}")
 
 
 BIS_INFO = {
@@ -3150,7 +3182,14 @@ def pi_to_po():
 
     except Exception as e:
         flash(f'处理出错：{str(e)}', 'error')
-        traceback.print_exc()
+        logger.error(f"pi2po error: {e}", exc_info=True)
+    finally:
+        # Clean up uploaded file
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except OSError:
+                pass
 
     return redirect(url_for('index'))
 
@@ -3202,7 +3241,7 @@ def po_to_packing():
 
     except Exception as e:
         flash(f'处理出错：{str(e)}', 'error')
-        traceback.print_exc()
+        logger.error(f"Error: {e}", exc_info=True)
 
     return redirect(url_for('index'))
 
@@ -3243,7 +3282,7 @@ def pi_to_ci():
 
     except Exception as e:
         flash(f'处理出错：{str(e)}', 'error')
-        traceback.print_exc()
+        logger.error(f"Error: {e}", exc_info=True)
 
     return redirect(url_for('index'))
 
@@ -3286,7 +3325,7 @@ def materials_to_production():
 
     except Exception as e:
         flash(f'处理出错：{str(e)}', 'error')
-        traceback.print_exc()
+        logger.error(f"Error: {e}", exc_info=True)
 
     return redirect(url_for('index'))
 
@@ -3326,7 +3365,7 @@ def quotation_to_cog():
 
     except Exception as e:
         flash(f'处理出错：{str(e)}', 'error')
-        traceback.print_exc()
+        logger.error(f"Error: {e}", exc_info=True)
 
     return redirect(url_for('index'))
 
@@ -3403,6 +3442,13 @@ def submit_feedback():
                 feedbacks = json.load(f)
         except Exception:
             feedbacks = []
+    # Cap at 500 entries, remove oldest resolved first
+    if len(feedbacks) >= 500:
+        resolved = [f for f in feedbacks if f.get('status') == 'resolved']
+        if resolved:
+            feedbacks = [f for f in feedbacks if f.get('status') != 'resolved'] + resolved[-50:]
+        else:
+            feedbacks = feedbacks[-400:]
     fb_id = len(feedbacks) + 1
     # Save images
     saved_images = []
