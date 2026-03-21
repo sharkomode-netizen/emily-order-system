@@ -2425,131 +2425,696 @@ def generate_packing_list_excel(pi_data, output_path, fty_order='', notes=''):
 # PI → CI (Commercial Invoice)
 # ============================================================
 def generate_ci_from_pi(pi_path, output_path, notes=''):
-    """Convert PI Excel to CI Excel.
-    - Change title from PROFORMA INVOICE to COMMERCIAL INVOICE
-    - Insert shipping detail rows after header
-    - Add bank info and declaration at bottom
-    Processes ALL sheets in the workbook.
+    """Convert PI Excel to CI Excel — generates a fresh CI from parsed PI data.
+    Reads all data from PI including items, terms, customer info, then builds
+    a proper COMMERCIAL INVOICE Excel file from scratch.
     """
-    import copy as _copy
-    wb = openpyxl.load_workbook(pi_path)
-
-    for ws in wb.worksheets:
-        _convert_sheet_pi_to_ci(ws, wb)
-
+    pi_wb = openpyxl.load_workbook(pi_path, data_only=True)
+    ci_data = _parse_pi_for_ci(pi_wb)
+    _generate_ci_excel(ci_data, output_path)
+    wb = openpyxl.load_workbook(output_path)
     _apply_notes_to_workbook(wb, output_path, notes, 'Commercial Invoice')
     return output_path
 
 
-def _convert_sheet_pi_to_ci(ws, wb):
-    """Convert a single PI sheet to CI format."""
+def _parse_pi_for_ci(wb):
+    """Parse PI workbook to extract all data needed for CI generation."""
+    result = {
+        'order_no': '',
+        'invoice_no': '',
+        'date': '',
+        'customer': '',
+        'customer_address': '',
+        'customer_vat': '',
+        'customer_tel': '',
+        'customer_fax': '',
+        'customer_web': '',
+        'brand': '',
+        'shipment_date': '',
+        'port_loading': '',
+        'port_discharge': '',
+        'delivery_terms': '',
+        'payment': '',
+        'shipped_by': '',
+        'currency': 'USD',
+        'items': [],       # [{style_code, style, color_code, color_name, description, price, pieces, sizes:{}}]
+        'style_groups': [],  # [{style, items:[...], total_qty, total_amount, size_headers:[]}]
+        'total_qty': 0,
+        'total_amount': 0,
+        'say_total': '',
+        'bank_info': {},
+        'declaration': '',
+        'size_sections': [],  # list of {size_headers:[], groups:[]}
+    }
 
-    # Step 1: Find and replace title in A1
-    a1_val = ws.cell(1, 1).value or ''
-    if 'PROFORMA' in a1_val.upper():
-        ws.cell(1, 1).value = a1_val.replace('PROFORMA INVOICE', 'COMMERCIAL  INVOICE').replace('Proforma Invoice', 'COMMERCIAL  INVOICE').replace('proforma invoice', 'COMMERCIAL  INVOICE')
-    elif 'INVOICE' not in a1_val.upper():
-        ws.cell(1, 1).value = a1_val + '\nCOMMERCIAL  INVOICE'
-    else:
-        ws.cell(1, 1).value = a1_val.replace('INVOICE', 'INVOICE').replace('PROFORMA', 'COMMERCIAL ')
+    for ws in wb.worksheets:
+        # Scan all rows for metadata
+        for r in range(1, ws.max_row + 1):
+            for c in range(1, min(ws.max_column + 1, 20)):
+                v = ws.cell(r, c).value
+                if not v:
+                    continue
+                vs = str(v).strip()
+                vl = vs.lower()
 
-    # Step 2: Find the row with column headers (Style, Color, Description...)
-    header_row = None
-    for r in range(1, min(ws.max_row + 1, 15)):
-        for c in range(1, ws.max_column + 1):
-            v = ws.cell(r, c).value
-            if v and 'Style' in str(v):
-                header_row = r
+                # Extract key fields from footer/header
+                if 'brand:' in vl:
+                    m = re.search(r'Brand:\s*(.+)', vs, re.IGNORECASE)
+                    if m:
+                        result['brand'] = m.group(1).strip()
+                elif 'shipment date' in vl or 'latest shipment' in vl:
+                    # Extract just the date part, not the "19685 PRS" prefix
+                    m = re.search(r'(\d{1,2}[-/]\w{3,}[-/]\d{4})', vs)
+                    if m:
+                        result['shipment_date'] = m.group(1).strip()
+                    else:
+                        m2 = re.search(r'(?:shipment date|latest shipment)[:\s]*(.+)', vs, re.IGNORECASE)
+                        if m2:
+                            result['shipment_date'] = m2.group(1).strip().rstrip(';')
+                elif 'port of loading' in vl:
+                    m = re.search(r'Port of loading[:\s]*([^;]+)', vs, re.IGNORECASE)
+                    if m:
+                        result['port_loading'] = m.group(1).strip().rstrip(';')
+                    # Check for port of discharge/destination in same cell
+                    m2 = re.search(r'Port of (?:discharge|destination)[:\s]*(.+)', vs, re.IGNORECASE)
+                    if m2:
+                        result['port_discharge'] = m2.group(1).strip().rstrip(';')
+                elif 'port of discharge' in vl or 'port of destination' in vl:
+                    m = re.search(r'Port of (?:discharge|destination)[:\s]*(.+)', vs, re.IGNORECASE)
+                    if m:
+                        result['port_discharge'] = m.group(1).strip().rstrip(';')
+                elif 'delivery terms' in vl or ('fob' in vl and ('yangon' in vl or 'myanmar' in vl)):
+                    m = re.search(r'Delivery Terms[:\s]*(.+)', vs, re.IGNORECASE)
+                    if m:
+                        result['delivery_terms'] = m.group(1).strip().rstrip(';')
+                    elif 'fob' in vl:
+                        result['delivery_terms'] = vs.strip().rstrip(';')
+                elif 'payment' in vl or 'term of payment' in vl:
+                    m = re.search(r'(?:Term of )?[Pp]ayment[:\s]*(.+)', vs)
+                    if m:
+                        result['payment'] = m.group(1).strip().rstrip(';')
+                elif 'say total' in vl:
+                    result['say_total'] = vs
+                elif vl.startswith('messers') or vl.startswith('buyer'):
+                    nv = ws.cell(r + 1, c).value if r + 1 <= ws.max_row else None
+                    if 'buyer' in vl:
+                        # Next row has customer name
+                        if nv:
+                            result['customer'] = str(nv).strip()
+                    else:
+                        m = re.search(r'Messers[:\s]*(.+)', vs, re.IGNORECASE)
+                        if m:
+                            result['customer'] = m.group(1).strip()
+                elif 'the buyer' in vl:
+                    nv = ws.cell(r + 1, c).value if r + 1 <= ws.max_row else None
+                    if nv and 'emily' not in str(nv).lower():
+                        result['customer'] = str(nv).strip()
+                elif 'c.i.f' in vl or 'vat:' in vl:
+                    m = re.search(r'(?:C\.I\.F|VAT)[/:\s]*\w*[:\s]*(\S+)', vs, re.IGNORECASE)
+                    if m:
+                        result['customer_vat'] = m.group(1).strip()
+                elif 'tel.' in vl or 'tel:' in vl:
+                    result['customer_tel'] = vs
+                elif 'http' in vl:
+                    result['customer_web'] = vs
+                elif 'order' in vl and 'no' in vl:
+                    m = re.search(r'Order\s*No\.?\s*:?\s*(\S+)', vs, re.IGNORECASE)
+                    if m:
+                        result['order_no'] = m.group(1).strip()
+                elif 'invoice' in vl and 'no' in vl:
+                    m = re.search(r'Invoice\s*No\.?\s*:?\s*(\S+)', vs, re.IGNORECASE)
+                    if m:
+                        result['invoice_no'] = m.group(1).strip()
+                elif 'date' in vl and ':' in vs and 'factory' not in vl and 'shipment' not in vl:
+                    m = re.search(r'DATE\s*:?\s*(.+)', vs, re.IGNORECASE)
+                    if m:
+                        result['date'] = m.group(1).strip()
+                elif 'bank' in vl and 'info' in vl:
+                    result['bank_info']['found'] = True
+                elif 'swift' in vl:
+                    m = re.search(r'SWIFT\s*(?:CODE)?[:\s]*(\S+)', vs, re.IGNORECASE)
+                    if m:
+                        result['bank_info']['swift'] = m.group(1).strip()
+                elif 'account' in vl and 'no' in vl:
+                    m = re.search(r'ACCOUNT\s*NO\.?\s*:?\s*(\S+)', vs, re.IGNORECASE)
+                    if m:
+                        result['bank_info']['account'] = m.group(1).strip()
+                elif 'exporter' in vl and 'origin' in vl:
+                    result['declaration'] = vs
+                elif 'total order' in vl:
+                    # Read total values from adjacent cells
+                    for cc in range(c + 1, min(ws.max_column + 1, c + 5)):
+                        tv = ws.cell(r, cc).value
+                        if tv:
+                            try:
+                                fv = float(tv)
+                                if fv > 100000:  # likely amount
+                                    result['total_amount'] = fv
+                                elif fv > 100:  # likely qty
+                                    result['total_qty'] = int(fv)
+                            except (ValueError, TypeError):
+                                pass
+
+        # Parse item data sections
+        # PI can have multiple size-range sections (e.g., sizes 19-25, then 26-30, then 31-38)
+        _parse_pi_items_for_ci(ws, result)
+
+    # Extract order_no from sheet name if not found elsewhere
+    if not result['order_no']:
+        for ws in wb.worksheets:
+            sn = ws.title.strip()
+            if sn and sn not in ('Sheet1', 'Sheet'):
+                result['order_no'] = sn
                 break
-        if header_row:
-            break
 
-    if not header_row:
-        header_row = 2  # fallback
+    return result
 
-    # Step 3: Insert 5 rows before header_row for shipping details
-    ws.insert_rows(header_row, 5)
-    ship_row = header_row
 
-    shipping_fields = [
-        ('PORT OF LOADING:  ', 'YANGON MYANMAR', 'EX-FACTORY DATE: '),
-        ('PORT OF DISCHARGE:  ', 'ALGECIRAS PORT, SPAIN', 'SHIPPED:  BY SEA'),
-        ('SHIPPED BY: ', '', 'ETD: '),
-        ('CONTAINER NO: ', '', ''),
-        ('DELIVERY TERMS:', 'FOB YANGON PORT, MYANMAR (INCOTERMS 2010)', ''),
-    ]
-    normal_font = Font(name='Arial', size=10)
-    for i, (label, val, right_val) in enumerate(shipping_fields):
-        r = ship_row + i
-        ws.cell(r, 1, label).font = normal_font
-        if val:
-            ws.cell(r, 3, val).font = normal_font
-        if right_val:
-            ws.cell(r, 8, right_val).font = normal_font
-
-    # Extract order number for the last shipping row
-    order_no = ''
-    a1 = ws.cell(1, 1).value or ''
-    import re as _re
-    m = _re.search(r'Order\s*No\.?\s*:?\s*([^\s\n]+)', a1, _re.IGNORECASE)
-    if m:
-        order_no = m.group(1).strip()
-    ws.cell(ship_row + 4, 8, f'Order No.: {order_no}').font = normal_font
-
-    # Step 4: Update DATE in header to current date (or leave as is)
-    # Find "DATE:" in A1 text and potentially update
-    # For now, leave the original date
-
-    # Step 5: Add bank info and declaration at bottom (only if not already present)
-    has_bank = False
-    has_decl = False
+def _parse_pi_items_for_ci(ws, result):
+    """Parse item rows from a PI sheet, handling multiple size sections."""
+    # Find header rows (contain sequential size numbers like 19, 20, 21... or 26, 27, 28...)
+    header_rows = []
     for r in range(1, ws.max_row + 1):
-        v = ws.cell(r, 1).value
-        if v:
-            vs = str(v)
-            if 'Bank information' in vs or 'Bank name' in vs:
-                has_bank = True
-            if 'exporter' in vs.lower() and 'origin' in vs.lower():
-                has_decl = True
-
-    last_data_row = ws.max_row
-    # Find "Total Order" row
-    total_row = None
-    for r in range(1, last_data_row + 1):
-        for c in range(1, 8):
+        # Check if this row has sequential size numbers in columns 8+
+        sizes_found = []
+        for c in range(8, min(ws.max_column + 1, 25)):
             v = ws.cell(r, c).value
-            if v and 'Total Order' in str(v):
-                total_row = r
-    if not total_row:
-        total_row = last_data_row
+            if v is not None:
+                try:
+                    sz = int(float(str(v).strip().rstrip('#')))
+                    if 15 <= sz <= 50:
+                        sizes_found.append((c, sz))
+                except (ValueError, TypeError):
+                    pass
 
-    # Add SAY TOTAL row (after Total Order, before any existing bank info)
-    if not has_bank:
-        say_row = total_row + 1
-        ws.cell(say_row, 1, 'SAY TOTAL: ').font = normal_font
+        if len(sizes_found) < 3:
+            continue
 
-        bank_row = say_row + 1
-        bank_lines = [
-            '(6) Bank information:',
-            '    Bank name: E.SUN COMMERCIAL BANK LTD., HONG KONG BRANCH',
-            '     Bank address: SUITE 2805, 28F, TOWER 6, THE GATEWAY, 9 CANTON ROAD, TSIMSHATSUI, KOWLOON, HONG KONG',
-            '     Beneficiary Name: EMILY HONG KONG LIMITED',
-            '     Beneficiary address: FLAT/RM 20, 8/F, YALE INDUSTRIAL CENTRE, 61-63 AU PUI WAN STREET, FO TAN, SHATIN, NT, HONG KONG ',
-            f'     SWIFT CODE: {EMILY_INFO["swift"]}    ACCOUNT NO.: {EMILY_INFO["account"]}',
-        ]
-        for i, line in enumerate(bank_lines):
-            ws.cell(bank_row + i, 1, line).font = normal_font
+        # Verify sizes are sequential (each +1 from previous) — true headers only
+        size_vals = [s[1] for s in sizes_found]
+        is_sequential = all(size_vals[i+1] == size_vals[i] + 1 for i in range(len(size_vals) - 1))
+        if not is_sequential:
+            continue
 
-        if not has_decl:
-            decl_row = bank_row + len(bank_lines) + 1
-            decl_lines = [
-                'The exporter BOLLY (HONG KONG) COMPANY LIMITED  (Number of Registered Exporter (MMREX00071) of the ',
-                'products covered by this document declares that, except where otherwise clearly indicated, these products are ',
-                'of Myanmar preferential origin according to rules  of origin of the Generalized System of ',
-                'Preferences of the  European Union and that the origin criterion met is W6402.',
-            ]
-            ws.cell(decl_row, 1, '\n'.join(decl_lines)).font = normal_font
-            ws.cell(decl_row, 1).alignment = Alignment(wrap_text=True, vertical='top')
+        # Skip rows that have data values in columns 1-2 (SKU/item data, not headers)
+        c1v = ws.cell(r, 1).value
+        c2v = ws.cell(r, 2).value
+        has_data = False
+        if c2v is not None:
+            try:
+                int(float(c2v))
+                has_data = True  # SKU number in col 2 → data row, not header
+            except (ValueError, TypeError):
+                pass
+        if c1v is not None and 'total' not in str(c1v).lower():
+            try:
+                float(c1v)
+                has_data = True
+            except (ValueError, TypeError):
+                pass
+        # "Total Style" rows repeat sizes as sub-headers — skip if they have "total"
+        row_text = ' '.join(str(ws.cell(r, c).value or '') for c in range(1, 8)).lower()
+        if 'total' in row_text:
+            continue
+        if has_data:
+            continue
+
+        has_style = False
+        for c in range(1, 8):
+            cv = ws.cell(r, c).value
+            if cv and 'style' in str(cv).lower():
+                has_style = True
+                break
+        header_rows.append({
+            'row': r,
+            'sizes': sizes_found,
+            'is_main': has_style,
+        })
+
+    if not header_rows:
+        return
+
+    # Process each section
+    current_section_items = []
+    current_sizes = []
+
+    for h_idx, hdr in enumerate(header_rows):
+        size_cols = {sz: c for c, sz in hdr['sizes']}
+        size_headers = sorted(size_cols.keys())
+        current_sizes = size_headers
+
+        # Determine end row (next header or end of sheet)
+        next_hdr_row = header_rows[h_idx + 1]['row'] if h_idx + 1 < len(header_rows) else ws.max_row + 1
+
+        # Find column assignments from main header
+        style_col = None
+        color_col = None
+        desc_col = None
+        price_col = None
+        pieces_col = None
+        sku_col = None
+
+        for c in range(1, 8):
+            cv = ws.cell(hdr['row'], c).value
+            if cv:
+                cvl = str(cv).strip().lower()
+                if 'style' in cvl and not style_col:
+                    style_col = c
+                elif 'color' in cvl and not color_col:
+                    color_col = c
+                elif 'desc' in cvl or 'descripcion' in cvl:
+                    desc_col = c
+                elif 'preci' in cvl or 'price' in cvl or 'unit price' in cvl:
+                    price_col = c
+                elif 'piece' in cvl or 'qty' in cvl:
+                    pieces_col = c
+
+        # If this is a continuation header (no Style column), use mappings from previous main header
+        if not style_col:
+            # Use defaults from the main header's layout
+            style_col = 3
+            color_col = 4
+            desc_col = 5
+            price_col = 6
+            pieces_col = 7
+
+        # Read data rows after this header — carry forward merged cell values
+        current_style = ''
+        current_desc = ''
+        current_price = 0
+
+        for r in range(hdr['row'] + 1, next_hdr_row):
+            # Skip "Total Style" rows
+            row_text = ''
+            for c in range(1, 8):
+                v = ws.cell(r, c).value
+                if v:
+                    row_text += str(v).lower()
+            if 'total style' in row_text or 'total order' in row_text or 'say total' in row_text:
+                continue
+
+            # Check if this row has size data
+            has_sizes = False
+            sizes = {}
+            for sz in size_headers:
+                c = size_cols[sz]
+                v = ws.cell(r, c).value
+                if v is not None:
+                    try:
+                        qty = int(float(v))
+                        if qty > 0:
+                            sizes[str(sz)] = qty
+                            has_sizes = True
+                    except (ValueError, TypeError):
+                        pass
+
+            if not has_sizes:
+                continue
+
+            # Read item data
+            sku_v = ws.cell(r, 2).value  # Column B is typically style code / SKU
+            style_v = ws.cell(r, style_col).value if style_col else None
+            color_v = ws.cell(r, color_col).value if color_col else None
+            desc_v = ws.cell(r, desc_col).value if desc_col else None
+            price_v = ws.cell(r, price_col).value if price_col else None
+            pieces_v = ws.cell(r, pieces_col).value if pieces_col else None
+
+            # Carry forward style/desc/price from previous row (merged cells)
+            if style_v:
+                current_style = str(style_v).strip()
+            if desc_v:
+                current_desc = str(desc_v).strip()
+            if price_v:
+                try:
+                    current_price = float(price_v)
+                except (ValueError, TypeError):
+                    pass
+
+            item = {
+                'sku': str(sku_v).strip() if sku_v else '',
+                'style': current_style,
+                'color': str(color_v).strip() if color_v else '',
+                'description': current_desc,
+                'price': current_price,
+                'pieces': 0,
+                'sizes': sizes,
+                'size_headers': size_headers,
+            }
+            if pieces_v:
+                try:
+                    item['pieces'] = int(float(pieces_v))
+                except (ValueError, TypeError):
+                    item['pieces'] = sum(sizes.values())
+            else:
+                item['pieces'] = sum(sizes.values())
+
+            result['items'].append(item)
+
+    # Compute totals if not already set
+    if result['total_qty'] == 0:
+        result['total_qty'] = sum(it['pieces'] for it in result['items'])
+    if result['total_amount'] == 0:
+        result['total_amount'] = sum(it['pieces'] * it['price'] for it in result['items'])
+
+
+def _generate_ci_excel(ci_data, output_path):
+    """Generate a fresh COMMERCIAL INVOICE Excel from parsed PI data."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'COMMERCIAL INVOICE'
+
+    # Styles
+    title_font = Font(name='Arial', size=16, bold=True)
+    subtitle_font = Font(name='Arial', size=12, bold=True)
+    normal_font = Font(name='Arial', size=10)
+    small_font = Font(name='Arial', size=9)
+    bold_font = Font(name='Arial', size=10, bold=True)
+    thin = Side(style='thin')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left_align = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    right_align = Alignment(horizontal='right', vertical='center')
+
+    row = 1
+
+    # === HEADER: Company info ===
+    ws.merge_cells(f'A{row}:P{row}')
+    header_text = f'{EMILY_INFO["company_en"]}  ADDRESS: {EMILY_INFO["address"]}'
+    ws.cell(row, 1, header_text).font = Font(name='Arial', size=12, bold=True)
+    ws.cell(row, 1).alignment = center
+    row += 1
+
+    ws.merge_cells(f'A{row}:P{row}')
+    ws.cell(row, 1, f'Contact: Carrie Liu   TEL: +852 69960627  +86 19518734927   Email: carrie@bollyhk.com').font = small_font
+    ws.cell(row, 1).alignment = center
+    row += 1
+
+    # === TITLE ===
+    ws.merge_cells(f'A{row}:P{row}')
+    ws.cell(row, 1, 'COMMERCIAL  INVOICE').font = subtitle_font
+    ws.cell(row, 1).alignment = center
+    row += 1
+
+    # === CUSTOMER INFO (left) + ORDER INFO (right) ===
+    customer = ci_data.get('customer', '')
+    customer_vat = ci_data.get('customer_vat', '')
+    customer_tel = ci_data.get('customer_tel', '')
+    customer_web = ci_data.get('customer_web', '')
+
+    # Left side: Customer
+    ws.merge_cells(f'A{row}:H{row + 5}')
+    cust_lines = [f'"Messers: {customer}']
+    # Extract address from customer if available
+    if customer:
+        cust_lines.append('')
+        if customer_vat:
+            cust_lines.append(f'C.I.F/VAT: {customer_vat}')
+        if customer_tel:
+            cust_lines.append(customer_tel)
+        if customer_web:
+            cust_lines.append(customer_web + '"')
+        else:
+            cust_lines[-1] = cust_lines[-1] + '"'
+    ws.cell(row, 1, '\n'.join(cust_lines)).font = normal_font
+    ws.cell(row, 1).alignment = Alignment(vertical='top', wrap_text=True)
+
+    # Right side: Order info
+    order_no = ci_data.get('order_no', '')
+    invoice_no = ci_data.get('invoice_no', '')
+    date_str = ci_data.get('date', '') or datetime.now().strftime('%d-%b-%Y')
+
+    info_labels = ['Order No.:', 'Invoice No.:', 'DATE:']
+    info_values = [order_no, invoice_no, date_str]
+    for i, (lbl, val) in enumerate(zip(info_labels, info_values)):
+        ws.cell(row + i, 10, lbl).font = bold_font
+        ws.cell(row + i, 12, val).font = normal_font
+    row += 6
+
+    # === SHIPPING DETAILS ===
+    port_loading = ci_data.get('port_loading', 'YANGON MYANMAR')
+    port_discharge = ci_data.get('port_discharge', '')
+    delivery_terms = ci_data.get('delivery_terms', '')
+
+    shipping_rows = [
+        ('PORT OF LOADING:', port_loading, 'EX-FACTORY DATE:'),
+        ('', '', ''),
+        ('PORT OF DISCHARGE:', port_discharge, 'SHIPPED:  BY SEA'),
+        ('', '', ''),
+        ('SHIPPED BY:', '', 'ETD:'),
+        ('', '', ''),
+        ('CONTAINER NO:', '', ''),
+        ('', '', ''),
+        ('DELIVERY TERMS:', delivery_terms, f'Order No.: {order_no}'),
+    ]
+    for label, val, right_val in shipping_rows:
+        if label:
+            ws.cell(row, 1, label).font = bold_font
+        if val:
+            ws.cell(row, 3, val).font = normal_font
+        if right_val:
+            ws.cell(row, 9, right_val).font = normal_font
+        # Add borders to shipping rows
+        for c in range(1, 17):
+            ws.cell(row, c).border = Border(
+                bottom=Side(style='thin') if label else Side(),
+                left=Side(style='thin') if c == 1 else Side(),
+                right=Side(style='thin') if c == 16 else Side(),
+            )
+        row += 1
+
+    # === DATA TABLE ===
+    items = ci_data.get('items', [])
+    if not items:
+        wb.save(output_path)
+        return
+
+    # Collect all unique size headers across all items
+    all_sizes = set()
+    for it in items:
+        all_sizes.update(int(s) for s in it.get('sizes', {}).keys())
+    all_sizes = sorted(all_sizes)
+
+    # Group items by size range section (items may span different size ranges)
+    # Detect size range breaks: e.g., 19-25, then 26-30, then 31-38
+    size_sections = []
+    current_section_sizes = None
+    current_section_items = []
+    for it in items:
+        item_sizes = it.get('size_headers', sorted(int(s) for s in it.get('sizes', {}).keys()))
+        item_sizes_key = tuple(item_sizes)
+        if current_section_sizes is None or item_sizes_key != current_section_sizes:
+            if current_section_items:
+                size_sections.append({'sizes': list(current_section_sizes), 'items': current_section_items})
+            current_section_sizes = item_sizes_key
+            current_section_items = [it]
+        else:
+            current_section_items.append(it)
+    if current_section_items:
+        size_sections.append({'sizes': list(current_section_sizes), 'items': current_section_items})
+
+    # Column layout: A=No., B=SKU, C=Style, D=Color, E=Description, F=Price, G=Pieces, H+=sizes
+    col_headers_base = ['', 'Style', 'Style', 'Color', 'Description', 'Precio', 'Pieces']
+    ws.column_dimensions['A'].width = 8
+    ws.column_dimensions['B'].width = 10
+    ws.column_dimensions['C'].width = 10
+    ws.column_dimensions['D'].width = 16
+    ws.column_dimensions['E'].width = 20
+    ws.column_dimensions['F'].width = 10
+    ws.column_dimensions['G'].width = 8
+
+    item_no = 0
+    grand_total_qty = 0
+    grand_total_amt = 0
+
+    for sec_idx, section in enumerate(size_sections):
+        sec_sizes = section['sizes']
+        sec_items = section['items']
+
+        # Write column headers for this section
+        headers = col_headers_base.copy()
+        for sz in sec_sizes:
+            headers.append(str(sz))
+
+        for i, h in enumerate(headers):
+            c = i + 1
+            cell = ws.cell(row, c, h)
+            cell.font = bold_font
+            cell.border = border
+            cell.alignment = center
+            if c >= 8:
+                ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 5.5
+
+        row += 1
+
+        # Group consecutive items by style for "Total Style" rows
+        from collections import OrderedDict
+        style_groups = []
+        prev_style = None
+        for it in sec_items:
+            style_key = it.get('style', '')
+            if style_key == prev_style and style_groups:
+                style_groups[-1][1].append(it)
+            else:
+                style_groups.append((style_key, [it]))
+                prev_style = style_key
+
+        for style, group_items in style_groups:
+            group_start_row = row
+
+            for it in group_items:
+                item_no += 1
+                # Calculate amount
+                amt = it['pieces'] * it['price']
+
+                ws.cell(row, 1, item_no).font = normal_font
+                ws.cell(row, 1).border = border
+                ws.cell(row, 1).alignment = center
+
+                ws.cell(row, 2, it.get('sku', '')).font = normal_font
+                ws.cell(row, 2).border = border
+
+                ws.cell(row, 3, it.get('style', '')).font = normal_font
+                ws.cell(row, 3).border = border
+
+                ws.cell(row, 4, it.get('color', '')).font = normal_font
+                ws.cell(row, 4).border = border
+
+                ws.cell(row, 5, it.get('description', '')).font = normal_font
+                ws.cell(row, 5).border = border
+
+                if it['price'] > 0:
+                    ws.cell(row, 6, it['price']).font = normal_font
+                    ws.cell(row, 6).number_format = '#,##0.00'
+                ws.cell(row, 6).border = border
+                ws.cell(row, 6).alignment = center
+
+                # Pieces = SUM formula of size columns
+                first_sz_col = 8
+                last_sz_col = 7 + len(sec_sizes)
+                f_ltr = openpyxl.utils.get_column_letter(first_sz_col)
+                l_ltr = openpyxl.utils.get_column_letter(last_sz_col)
+                ws.cell(row, 7).value = f'=SUM({f_ltr}{row}:{l_ltr}{row})'
+                ws.cell(row, 7).font = normal_font
+                ws.cell(row, 7).border = border
+                ws.cell(row, 7).alignment = center
+
+                # Size quantities
+                for si, sz in enumerate(sec_sizes):
+                    c = 8 + si
+                    qty = it.get('sizes', {}).get(str(sz), '')
+                    if qty:
+                        ws.cell(row, c, int(qty)).font = normal_font
+                    ws.cell(row, c).border = border
+                    ws.cell(row, c).alignment = center
+
+                grand_total_qty += it['pieces']
+                grand_total_amt += amt
+                row += 1
+
+            # Total Style row
+            group_end_row = row - 1
+            ws.cell(row, 4, 'Total Style ............................     ').font = normal_font
+            g_ltr = openpyxl.utils.get_column_letter(7)
+            ws.cell(row, 7).value = f'=SUM({g_ltr}{group_start_row}:{g_ltr}{group_end_row})'
+            ws.cell(row, 7).font = bold_font
+            ws.cell(row, 7).alignment = center
+
+            # Repeat size headers in total row
+            for si, sz in enumerate(sec_sizes):
+                ws.cell(row, 8 + si, sz).font = small_font
+                ws.cell(row, 8 + si).alignment = center
+
+            # Amount column (last col + 1)
+            amt_col = 8 + len(sec_sizes)
+            total_style_amt = sum(it['pieces'] * it['price'] for it in group_items)
+            ws.cell(row, amt_col, total_style_amt).font = normal_font
+            ws.cell(row, amt_col).number_format = '#,##0.00'
+
+            row += 1
+
+    # === TOTAL ORDER ROW ===
+    ws.cell(row, 5, 'Total Order ').font = bold_font
+    ws.cell(row, 6, grand_total_amt).font = bold_font
+    ws.cell(row, 6).number_format = '#,##0.00'
+    ws.cell(row, 7, grand_total_qty).font = bold_font
+    row += 1
+
+    # === SAY TOTAL ===
+    say_total = ci_data.get('say_total', '')
+    if not say_total:
+        say_total = f'SAY TOTAL: USD {_amount_in_words(grand_total_amt)} ONLY'
+    ws.merge_cells(f'A{row}:P{row}')
+    ws.cell(row, 1, say_total).font = small_font
+    row += 1
+
+    # === FOOTER TERMS ===
+    brand = ci_data.get('brand', '')
+    shipment_date = ci_data.get('shipment_date', '')
+    payment = ci_data.get('payment', '')
+
+    footer_lines = []
+    if brand:
+        footer_lines.append(f'(1) Brand: {brand}')
+    if shipment_date:
+        footer_lines.append(f'(2) The latest shipment date: {grand_total_qty} PRS {shipment_date};')
+    if port_loading:
+        line = f'(3) Port of loading: {port_loading};'
+        if port_discharge:
+            line += f'              Port of discharge: {port_discharge}'
+        footer_lines.append(line)
+    if delivery_terms:
+        footer_lines.append(f'(4) Delivery Terms: {delivery_terms}')
+    if payment:
+        footer_lines.append(f'(5) Term of payment: {payment}')
+
+    for line in footer_lines:
+        ws.merge_cells(f'A{row}:P{row}')
+        ws.cell(row, 1, line).font = normal_font
+        row += 1
+
+    # === BANK INFO ===
+    bank_lines = [
+        '(6) Bank information:',
+        f'    Bank name: {EMILY_INFO["bank_name"]}',
+        f'     Bank address: {EMILY_INFO["bank_address"]}',
+        f'     Beneficiary Name: {EMILY_INFO["company_en"]}',
+        f'     Beneficiary address: {EMILY_INFO["address"]}',
+        f'     SWIFT CODE: {EMILY_INFO["swift"]}    ACCOUNT NO.: {EMILY_INFO["account"]}',
+    ]
+    for line in bank_lines:
+        ws.merge_cells(f'A{row}:P{row}')
+        ws.cell(row, 1, line).font = normal_font
+        row += 1
+
+    # === DECLARATION (if present in PI) ===
+    decl = ci_data.get('declaration', '')
+    if decl:
+        row += 1
+        ws.merge_cells(f'A{row}:P{row}')
+        ws.cell(row, 1, decl).font = normal_font
+        ws.cell(row, 1).alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[row].height = 60
+        row += 1
+
+    # === SIGNATURES ===
+    row += 1
+    ws.cell(row, 1, 'The buyer:').font = bold_font
+    ws.cell(row, 9, 'The seller:').font = bold_font
+    row += 1
+    ws.cell(row, 1, customer).font = normal_font
+    ws.cell(row, 9, EMILY_INFO['company_en']).font = normal_font
+
+    # Print setup
+    try:
+        from openpyxl.worksheet.properties import PageSetupProperties
+        ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.page_setup.orientation = 'landscape'
+    except Exception:
+        pass
+
+    wb.save(output_path)
 
 
 # ============================================================
