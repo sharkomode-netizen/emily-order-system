@@ -3018,13 +3018,14 @@ def submit_feedback():
             pass
     # Save attached files
     attached_files = data.get('files') or []
-    if len(attached_files) > 3:
-        attached_files = attached_files[:3]
-    ALLOWED_EXT = {'.xlsx', '.xls', '.pdf', '.csv', '.json', '.txt'}
+    if len(attached_files) > 5:
+        attached_files = attached_files[:5]
+    ALLOWED_EXT = {'.xlsx', '.xls', '.pdf', '.csv', '.json', '.txt', '.jpg', '.jpeg', '.png', '.webp', '.heic', '.html'}
     saved_files = []
     for i, af in enumerate(attached_files):
         af_data = af.get('data', '')
         af_name = af.get('name', f'file_{i}')
+        af_role = af.get('role', '')  # 'source' or 'target' for training
         ext = os.path.splitext(af_name)[1].lower()
         if ext not in ALLOWED_EXT or ',' not in af_data:
             continue
@@ -3034,10 +3035,13 @@ def submit_feedback():
         try:
             with open(fpath, 'wb') as f:
                 f.write(base64.b64decode(b64))
-            saved_files.append({'name': af_name, 'path': safe_name})
+            file_info = {'name': af_name, 'path': safe_name}
+            if af_role:
+                file_info['role'] = af_role
+            saved_files.append(file_info)
         except Exception:
             pass
-    feedbacks.append({
+    fb_entry = {
         'id': fb_id,
         'message': msg,
         'category': category,
@@ -3045,7 +3049,11 @@ def submit_feedback():
         'files': saved_files,
         'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'status': 'pending',
-    })
+    }
+    # Training-specific metadata
+    if category == 'training':
+        fb_entry['training_type'] = data.get('training_type', '')
+    feedbacks.append(fb_entry)
     with open(FEEDBACK_FILE, 'w', encoding='utf-8') as f:
         json.dump(feedbacks, f, ensure_ascii=False, indent=2)
     return jsonify({'ok': True})

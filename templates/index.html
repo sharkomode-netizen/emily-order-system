@@ -342,6 +342,35 @@ body {
 .notes-area textarea:focus { border-color: var(--primary); outline: none; }
 .notes-area textarea::placeholder { color: var(--text-dim); opacity: 0.6; }
 .notes-label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; display: flex; align-items: center; gap: 4px; }
+.training-hint {
+    font-size: 12px; color: var(--text-dim); line-height: 1.6; margin-bottom: 14px;
+}
+.training-hint b { color: var(--text); }
+.training-select { margin-bottom: 14px; }
+.training-label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 4px; }
+.training-dropdown {
+    width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer;
+}
+.training-dropdown:focus { border-color: var(--primary); outline: none; }
+.training-uploads {
+    display: flex; gap: 12px; align-items: center; margin-bottom: 12px;
+}
+.training-box { flex: 1; }
+.training-box-label { font-size: 12px; font-weight: 600; margin-bottom: 6px; color: var(--text); }
+.training-drop {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 20px 12px;
+    text-align: center; cursor: pointer; transition: all 0.15s; position: relative;
+}
+.training-drop:hover { border-color: var(--primary); background: rgba(108,140,255,0.03); }
+.training-drop.has-file { border-color: var(--success); border-style: solid; background: rgba(52,211,153,0.05); }
+.training-drop-icon { font-size: 22px; display: block; margin-bottom: 4px; opacity: 0.5; }
+.training-drop-text { font-size: 11px; color: var(--text-dim); }
+.training-arrow { font-size: 20px; color: var(--primary); flex-shrink: 0; padding-top: 20px; }
+.training-file-name {
+    font-size: 11px; color: var(--success); margin-top: 4px; min-height: 16px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 </style>
 </head>
 <body>
@@ -554,31 +583,74 @@ body {
         <span class="feedback-arrow" id="feedbackArrow">&#9660;</span>
     </div>
     <div class="feedback-body" id="feedbackBody">
-        <p class="feedback-hint">提交改进建议，帮助提升系统数据处理的精准度。<br>关于数据格式、计算逻辑、转换准确性的反馈优先处理。</p>
+        <p class="feedback-hint">提交改进建议或训练数据，帮助提升系统数据处理的精准度。</p>
         <div class="feedback-cats">
             <button type="button" class="fb-cat active" data-cat="data">数据精度</button>
             <button type="button" class="fb-cat" data-cat="format">格式问题</button>
             <button type="button" class="fb-cat" data-cat="feature">功能建议</button>
+            <button type="button" class="fb-cat" data-cat="training">数据训练</button>
             <button type="button" class="fb-cat" data-cat="other">其他</button>
         </div>
-        <textarea id="feedbackText" class="feedback-textarea" placeholder="请描述您遇到的问题或建议..." rows="3" maxlength="2000"></textarea>
-        <div class="feedback-attach-row">
-            <div class="feedback-images" id="feedbackImages">
-                <div class="fb-img-upload" id="fbImgUpload">
-                    <input type="file" accept="image/*" multiple id="fbImgInput" style="position:absolute;inset:0;opacity:0;cursor:pointer;">
-                    <span class="fb-img-icon">&#128247;</span>
-                    <span class="fb-img-label">添加截图</span>
+
+        <!-- 普通反馈面板 -->
+        <div id="feedbackNormalPanel">
+            <textarea id="feedbackText" class="feedback-textarea" placeholder="请描述您遇到的问题或建议..." rows="3" maxlength="2000"></textarea>
+            <div class="feedback-attach-row">
+                <div class="feedback-images" id="feedbackImages">
+                    <div class="fb-img-upload" id="fbImgUpload">
+                        <input type="file" accept="image/*" multiple id="fbImgInput" style="position:absolute;inset:0;opacity:0;cursor:pointer;">
+                        <span class="fb-img-icon">&#128247;</span>
+                        <span class="fb-img-label">添加截图</span>
+                    </div>
                 </div>
-            </div>
-            <div class="feedback-files" id="feedbackFilesArea">
-                <div class="fb-file-upload" id="fbFileUpload">
-                    <input type="file" accept=".xlsx,.xls,.pdf,.csv,.json,.txt" multiple id="fbFileInput" style="position:absolute;inset:0;opacity:0;cursor:pointer;">
-                    <span class="fb-img-icon">&#128206;</span>
-                    <span class="fb-img-label">附件文件</span>
+                <div class="feedback-files" id="feedbackFilesArea">
+                    <div class="fb-file-upload" id="fbFileUpload">
+                        <input type="file" accept=".xlsx,.xls,.pdf,.csv,.json,.txt" multiple id="fbFileInput" style="position:absolute;inset:0;opacity:0;cursor:pointer;">
+                        <span class="fb-img-icon">&#128206;</span>
+                        <span class="fb-img-label">附件文件</span>
+                    </div>
+                    <div class="fb-file-list" id="fbFileList"></div>
                 </div>
-                <div class="fb-file-list" id="fbFileList"></div>
             </div>
         </div>
+
+        <!-- 数据训练面板 -->
+        <div id="feedbackTrainingPanel" style="display:none;">
+            <p class="training-hint">上传<b>转换前的源文件</b>和<b>正确的输出文件</b>，AI会自动对比学习，提升转换精准度。</p>
+            <div class="training-select">
+                <label class="training-label">转换类型</label>
+                <select id="trainingType" class="training-dropdown">
+                    <option value="po2pi">PO &rarr; PI</option>
+                    <option value="po2packing">PO &rarr; Packing List</option>
+                    <option value="pi2ci">PI &rarr; CI</option>
+                    <option value="mat2prod">原材料 &rarr; 生产指令单</option>
+                    <option value="quot2cog">报价单 &rarr; COG</option>
+                </select>
+            </div>
+            <div class="training-uploads">
+                <div class="training-box">
+                    <div class="training-box-label">&#128196; 转换前（源文件）</div>
+                    <div class="training-drop" id="trainSourceDrop">
+                        <input type="file" accept=".xlsx,.xls,.pdf,.jpg,.jpeg,.png,.webp,.heic,.csv" id="trainSourceInput" style="position:absolute;inset:0;opacity:0;cursor:pointer;">
+                        <span class="training-drop-icon">&#128449;</span>
+                        <span class="training-drop-text">拖放或点击上传</span>
+                    </div>
+                    <div class="training-file-name" id="trainSourceName"></div>
+                </div>
+                <div class="training-arrow">&#10145;</div>
+                <div class="training-box">
+                    <div class="training-box-label">&#9989; 转换后（正确结果）</div>
+                    <div class="training-drop" id="trainTargetDrop">
+                        <input type="file" accept=".xlsx,.xls,.html,.pdf,.csv" id="trainTargetInput" style="position:absolute;inset:0;opacity:0;cursor:pointer;">
+                        <span class="training-drop-icon">&#128203;</span>
+                        <span class="training-drop-text">拖放或点击上传</span>
+                    </div>
+                    <div class="training-file-name" id="trainTargetName"></div>
+                </div>
+            </div>
+            <textarea id="trainingNotes" class="feedback-textarea" placeholder="补充说明（可选）：如哪些地方需要特别注意、哪些列的格式有特殊要求..." rows="2" maxlength="1000"></textarea>
+        </div>
+
         <div class="feedback-bottom">
             <span class="feedback-count" id="feedbackCount">0/2000</span>
             <button type="button" class="btn btn-primary" id="feedbackSubmit" style="padding:8px 20px;font-size:13px;" disabled>提交反馈</button>
@@ -774,19 +846,44 @@ document.querySelectorAll('form[id]').forEach(form => {
     const imgContainer = document.getElementById('feedbackImages');
     const imgInput = document.getElementById('fbImgInput');
     const imgUploadBox = document.getElementById('fbImgUpload');
+    const normalPanel = document.getElementById('feedbackNormalPanel');
+    const trainingPanel = document.getElementById('feedbackTrainingPanel');
+    const trainSourceInput = document.getElementById('trainSourceInput');
+    const trainTargetInput = document.getElementById('trainTargetInput');
+    const trainSourceName = document.getElementById('trainSourceName');
+    const trainTargetName = document.getElementById('trainTargetName');
+    const trainSourceDrop = document.getElementById('trainSourceDrop');
+    const trainTargetDrop = document.getElementById('trainTargetDrop');
+    const trainingType = document.getElementById('trainingType');
+    const trainingNotes = document.getElementById('trainingNotes');
     let selectedCat = 'data';
-    let attachedImages = []; // {name, dataUrl}
+    let attachedImages = [];
+    let trainSource = null; // {name, dataUrl}
+    let trainTarget = null;
 
     toggle.addEventListener('click', () => {
         body.classList.toggle('open');
         arrow.classList.toggle('open');
     });
 
+    // Category switching with panel toggle
     document.querySelectorAll('.fb-cat').forEach(c => {
         c.addEventListener('click', () => {
             document.querySelectorAll('.fb-cat').forEach(b => b.classList.remove('active'));
             c.classList.add('active');
             selectedCat = c.dataset.cat;
+            if (selectedCat === 'training') {
+                normalPanel.style.display = 'none';
+                trainingPanel.style.display = 'block';
+                count.style.display = 'none';
+                btn.textContent = '提交训练数据';
+            } else {
+                normalPanel.style.display = 'block';
+                trainingPanel.style.display = 'none';
+                count.style.display = '';
+                btn.textContent = '提交反馈';
+            }
+            updateSubmitState();
         });
     });
 
@@ -797,10 +894,13 @@ document.querySelectorAll('form[id]').forEach(form => {
     });
 
     var updateSubmitState = function() {
-        btn.disabled = text.value.trim().length === 0 && attachedImages.length === 0;
+        if (selectedCat === 'training') {
+            btn.disabled = !trainSource || !trainTarget;
+        } else {
+            btn.disabled = text.value.trim().length === 0 && attachedImages.length === 0 && attachedFiles.length === 0;
+        }
     };
 
-    // Image handling
     function readFileAsDataUrl(file) {
         return new Promise((resolve) => {
             const reader = new FileReader();
@@ -836,7 +936,6 @@ document.querySelectorAll('form[id]').forEach(form => {
         thumb.querySelector('.fb-img-remove').addEventListener('click', () => {
             attachedImages = attachedImages.filter((_, i) => i !== parseInt(thumb.dataset.idx));
             thumb.remove();
-            // reindex
             imgContainer.querySelectorAll('.fb-img-thumb').forEach((t, i) => t.dataset.idx = i);
             if (attachedImages.length < 5) imgUploadBox.style.display = '';
             updateSubmitState();
@@ -845,8 +944,7 @@ document.querySelectorAll('form[id]').forEach(form => {
     }
 
     imgInput.addEventListener('change', async () => {
-        const files = Array.from(imgInput.files);
-        for (const file of files) {
+        for (const file of Array.from(imgInput.files)) {
             if (attachedImages.length >= 5) break;
             if (!file.type.startsWith('image/')) continue;
             const raw = await readFileAsDataUrl(file);
@@ -859,7 +957,6 @@ document.querySelectorAll('form[id]').forEach(form => {
         updateSubmitState();
     });
 
-    // Drag & drop on textarea
     text.addEventListener('dragover', e => { e.preventDefault(); });
     text.addEventListener('drop', async e => {
         const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
@@ -877,7 +974,6 @@ document.querySelectorAll('form[id]').forEach(form => {
         }
     });
 
-    // Paste image
     text.addEventListener('paste', async e => {
         const items = Array.from(e.clipboardData.items).filter(i => i.type.startsWith('image/'));
         if (items.length && attachedImages.length < 5) {
@@ -899,9 +995,9 @@ document.querySelectorAll('form[id]').forEach(form => {
     const fileInput = document.getElementById('fbFileInput');
     const fileList = document.getElementById('fbFileList');
     const fileUploadBox = document.getElementById('fbFileUpload');
-    let attachedFiles = []; // {name, dataUrl}
-    const ALLOWED_EXT = ['.xlsx','.xls','.pdf','.csv','.json','.txt'];
-    const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+    let attachedFiles = [];
+    const ALLOWED_EXT = ['.xlsx','.xls','.pdf','.csv','.json','.txt','.jpg','.jpeg','.png','.webp','.heic'];
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB for training files
 
     fileInput.addEventListener('change', async () => {
         for (const file of Array.from(fileInput.files)) {
@@ -933,25 +1029,55 @@ document.querySelectorAll('form[id]').forEach(form => {
         fileUploadBox.style.display = attachedFiles.length >= 3 ? 'none' : '';
     }
 
-    // Override to include files
-    updateSubmitState = function() {
-        btn.disabled = text.value.trim().length === 0 && attachedImages.length === 0 && attachedFiles.length === 0;
-    };
+    // Training file uploads
+    trainSourceInput.addEventListener('change', async () => {
+        const file = trainSourceInput.files[0];
+        if (file && file.size <= MAX_FILE_SIZE) {
+            trainSource = {name: file.name, dataUrl: await readFileAsDataUrl(file)};
+            trainSourceName.textContent = file.name;
+            trainSourceDrop.classList.add('has-file');
+        }
+        trainSourceInput.value = '';
+        updateSubmitState();
+    });
+    trainTargetInput.addEventListener('change', async () => {
+        const file = trainTargetInput.files[0];
+        if (file && file.size <= MAX_FILE_SIZE) {
+            trainTarget = {name: file.name, dataUrl: await readFileAsDataUrl(file)};
+            trainTargetName.textContent = file.name;
+            trainTargetDrop.classList.add('has-file');
+        }
+        trainTargetInput.value = '';
+        updateSubmitState();
+    });
 
     btn.addEventListener('click', async () => {
-        const msg = text.value.trim();
-        if (!msg && attachedImages.length === 0 && attachedFiles.length === 0) return;
         btn.disabled = true;
         btn.textContent = '提交中...';
         status.className = 'feedback-status';
         status.textContent = '';
         try {
-            const payload = {message: msg, category: selectedCat};
-            if (attachedImages.length > 0) {
-                payload.images = attachedImages.map(img => ({name: img.name, data: img.dataUrl}));
-            }
-            if (attachedFiles.length > 0) {
-                payload.files = attachedFiles.map(f => ({name: f.name, data: f.dataUrl}));
+            let payload;
+            if (selectedCat === 'training') {
+                payload = {
+                    category: 'training',
+                    message: trainingNotes.value.trim() || '训练数据提交',
+                    training_type: trainingType.value,
+                    files: [
+                        {name: 'source_' + trainSource.name, data: trainSource.dataUrl, role: 'source'},
+                        {name: 'target_' + trainTarget.name, data: trainTarget.dataUrl, role: 'target'},
+                    ]
+                };
+            } else {
+                const msg = text.value.trim();
+                if (!msg && attachedImages.length === 0 && attachedFiles.length === 0) return;
+                payload = {message: msg, category: selectedCat};
+                if (attachedImages.length > 0) {
+                    payload.images = attachedImages.map(img => ({name: img.name, data: img.dataUrl}));
+                }
+                if (attachedFiles.length > 0) {
+                    payload.files = attachedFiles.map(f => ({name: f.name, data: f.dataUrl}));
+                }
             }
             const res = await fetch('/feedback', {
                 method: 'POST',
@@ -961,14 +1087,23 @@ document.querySelectorAll('form[id]').forEach(form => {
             const data = await res.json();
             if (data.ok) {
                 status.className = 'feedback-status ok';
-                status.textContent = '感谢反馈！我们会认真审核并持续改进系统。';
-                text.value = '';
-                count.textContent = '0/2000';
-                attachedImages = [];
-                imgContainer.querySelectorAll('.fb-img-thumb').forEach(t => t.remove());
-                imgUploadBox.style.display = '';
-                attachedFiles = [];
-                renderFileList();
+                if (selectedCat === 'training') {
+                    status.textContent = '训练数据已提交！AI将对比分析并优化转换逻辑。';
+                    trainSource = null; trainTarget = null;
+                    trainSourceName.textContent = ''; trainTargetName.textContent = '';
+                    trainSourceDrop.classList.remove('has-file');
+                    trainTargetDrop.classList.remove('has-file');
+                    trainingNotes.value = '';
+                } else {
+                    status.textContent = '感谢反馈！我们会认真审核并持续改进系统。';
+                    text.value = '';
+                    count.textContent = '0/2000';
+                    attachedImages = [];
+                    imgContainer.querySelectorAll('.fb-img-thumb').forEach(t => t.remove());
+                    imgUploadBox.style.display = '';
+                    attachedFiles = [];
+                    renderFileList();
+                }
             } else {
                 status.className = 'feedback-status err';
                 status.textContent = data.error || '提交失败';
@@ -977,7 +1112,7 @@ document.querySelectorAll('form[id]').forEach(form => {
             status.className = 'feedback-status err';
             status.textContent = '网络错误，请稍后重试';
         }
-        btn.textContent = '提交反馈';
+        btn.textContent = selectedCat === 'training' ? '提交训练数据' : '提交反馈';
         updateSubmitState();
     });
 })();

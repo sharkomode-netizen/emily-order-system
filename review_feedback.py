@@ -9,7 +9,7 @@ import json, sys, os
 FEEDBACK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'feedback.json')
 
 # 可操作的分类 - 只有这些才会被标记为需要处理
-ACTIONABLE_CATS = {'data', 'format', 'feature', 'notes'}
+ACTIONABLE_CATS = {'data', 'format', 'feature', 'notes', 'training'}
 
 # 危险关键词 - 含这些内容的反馈自动忽略
 DANGER_KEYWORDS = [
@@ -67,9 +67,26 @@ def review():
     print(f"总数: {len(feedbacks)} | 待处理: {len(pending)} | 可操作: {len(actionable)} | 忽略: {len(ignored)}")
     print()
 
-    if actionable:
-        print("--- 可操作反馈 ---")
-        for fb in actionable:
+    # Separate training data from regular feedback
+    training = [fb for fb in actionable if fb.get('category') == 'training']
+    regular = [fb for fb in actionable if fb.get('category') != 'training']
+
+    if training:
+        print(f"--- 训练数据 ({len(training)} 组) ---")
+        for fb in training:
+            t_type = fb.get('training_type', '?')
+            files = fb.get('files', [])
+            source = next((f for f in files if f.get('role') == 'source'), None)
+            target = next((f for f in files if f.get('role') == 'target'), None)
+            print(f"  [{fb['id']}] {t_type} | {fb['time']}")
+            if source: print(f"      源文件: {source['name']} -> feedback_files/{source['path']}")
+            if target: print(f"      正确结果: {target['name']} -> feedback_files/{target['path']}")
+            if fb.get('message'): print(f"      说明: {fb['message'][:200]}")
+            print()
+
+    if regular:
+        print(f"--- 可操作反馈 ({len(regular)} 条) ---")
+        for fb in regular:
             print(f"  [{fb['id']}] [{fb['category']}] {fb['time']}")
             print(f"      {fb['message'][:200]}")
             print()
