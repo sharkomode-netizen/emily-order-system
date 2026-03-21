@@ -232,8 +232,9 @@ def _parse_pi_generic(filepath):
 
     # 扫描所有sheet，找到含列头的最佳sheet
     header_keywords = {
-        'article': ['article', 'art.', 'style', 'item no', 'model', 'varegrundkode'],
-        'sku': ['varenummer', 'sku', 'item code', 'product code'],
+        'article': ['article', 'art.', 'item no', 'model', 'varegrundkode'],
+        'sku': ['varenummer', 'sku', 'item code', 'product code', 'style no'],
+        'style_name': ['style name'],
         'description': ['varebeskrivelse', 'description', 'desc', 'product name'],
         'color_code': ['farvekode', 'color code', 'colour code', 'col code'],
         'color_name': ['colour name', 'color name', 'farvenavn'],
@@ -402,6 +403,7 @@ def _parse_pi_generic(filepath):
     # === 3. 读取数据行，按 article+color 分组 ===
     art_col = col_map.get('article', 1)
     sku_col = col_map.get('sku')
+    style_name_col = col_map.get('style_name')
     color_name_col = col_map.get('color_name')
     desc_col = col_map.get('description')
     # For name_col: prefer color_name, fallback to description
@@ -412,12 +414,8 @@ def _parse_pi_generic(filepath):
     price_col = col_map.get('price')
     amt_col = col_map.get('amount')
 
-    # Detect Scandinavian/European format → default EUR
-    if currency == 'USD':
-        scandinavian_markers = ['dokumentnummer', 'varebeskrivelse', 'farvekode', 'størrelseskode', 'antal', 'varegrundkode']
-        header_text = ' '.join(str(ws.cell(best_header_row, c).value or '').lower() for c in range(1, ws.max_column + 1))
-        if any(m in header_text for m in scandinavian_markers):
-            currency = 'EUR'
+    # Note: Scandinavian headers (Bisgaard etc.) use USD for international trade
+    # Currency is only overridden if explicitly found in cell values (lines above)
 
     # Skip sub-header rows
     start_row = header_row + 1
@@ -434,6 +432,7 @@ def _parse_pi_generic(filepath):
 
     current_desc = ''
     current_cn = ''
+    current_style_name = ''
 
     for r in range(start_row, ws.max_row + 1):
         art_v = ws.cell(r, art_col).value
@@ -446,6 +445,7 @@ def _parse_pi_generic(filepath):
         # Read color_name and description separately if both columns exist
         cn_v = ws.cell(r, color_name_col).value if color_name_col else None
         desc_v = ws.cell(r, desc_col).value if desc_col else None
+        sn_v = ws.cell(r, style_name_col).value if style_name_col else None
 
         # 更新当前 article/name/sku/color_code
         if art_v:
@@ -456,6 +456,8 @@ def _parse_pi_generic(filepath):
             current_cc = str(cc_v).strip()
         if cn_v:
             current_cn = str(cn_v).strip()
+        if sn_v:
+            current_style_name = str(sn_v).strip()
         if desc_v:
             current_desc = str(desc_v).strip()
         if name_v:
@@ -525,6 +527,7 @@ def _parse_pi_generic(filepath):
                 'article': current_article,
                 'sku': current_sku if sku_col else '',
                 'name': current_name,
+                'style_name': current_style_name if style_name_col else '',
                 'description': current_desc if desc_col else '',
                 'color_name_raw': current_cn if color_name_col else '',
                 'color_code': current_cc if color_code_col else '',
@@ -567,6 +570,7 @@ def _parse_pi_generic(filepath):
         items.append({
             'style_code': g['article'],
             'style': style,
+            'style_name': g.get('style_name', ''),
             'color_code': color_code,
             'color_name': color_name,
             'color_full': f"{color_code} {color_name}".strip() if color_code else color_name,
@@ -624,6 +628,10 @@ def _parse_pi_generic(filepath):
         m = re.search(r'(PO\d+)', fname)
         if m:
             order_no = m.group(1)
+
+    # Use ETD date as shipment date fallback
+    if date_str and 'shipment_date' not in terms:
+        terms['shipment_date'] = date_str
 
     return {
         'order_no': order_no,
@@ -1271,8 +1279,406 @@ ws = wb.active
         pass
 
 
+BIS_INFO = {
+    'bill_to': 'Bisgaard sko A/S\nBalticagade 10\n8000 Aarhus C.\nDenmark',
+    'ship_to': 'Bisgaard sko A/S\nBalticagade 10\n8000 Aarhus C.\nDenmark',
+    'contact': 'Contact: Lorna Gan   TEL: +852 XXXX XXXX   Email: xxxx@emily.com.hk',
+    'country_of_origin': 'MYANMAR',
+    'delivery_terms': 'FOB - INCOTERMS 2000',
+    'port_of_loading': 'ANY PORT IN MYANMAR',
+    'payment': 'TT 40 DAYS AFTER SHIPPED ON BOARD DATE',
+    'brand': 'bisgaard',
+    'bank_name': 'BANK OF CHINA (HONG KONG) LIMITED',
+    'bank_address': 'BANK OF CHINA TOWER, 1 GARDEN ROAD, CENTRAL, HONG KONG',
+    'swift': 'BKCHHKHH',
+    'account': '012-917-9-238185-5',
+}
+
+# BIS 材质描述映射（根据 article 前缀）
+BIS_MATERIALS = {
+    '14101': 'Upper: wool felt\nLining: textile\nInsock: textile\nOutsole: rubber',
+    '14102': 'Upper: wool felt\nLining: textile\nInsock: textile\nOutsole: rubber',
+    '14103': 'Upper: wool felt\nLining: textile\nInsock: textile\nOutsole: TPR',
+    '14104': 'Upper: wool felt\nLining: textile\nInsock: textile\nOutsole: TPR',
+}
+
+
+def _generate_bis_pi(pi_data, output_path, notes=''):
+    """Generate BIS-format Proforma Invoice — matches Bisgaard template exactly."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'INVOICE'
+
+    # Styles
+    title_font = Font(name='Arial', size=22, bold=True)
+    subtitle_font = Font(name='Arial', size=18, bold=True)
+    normal_font = Font(name='Arial', size=10)
+    small_font = Font(name='Arial', size=9)
+    bold_font = Font(name='Arial', size=10, bold=True)
+    bold_small = Font(name='Arial', size=9, bold=True)
+    thin = Side(style='thin')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left_align = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    left_top = Alignment(horizontal='left', vertical='top', wrap_text=True)
+    right_align = Alignment(horizontal='right', vertical='center')
+
+    # Size columns: F=19#, G=20#, ... Y=38# (20 columns, F=col6 to Y=col25)
+    SIZE_START_COL = 6  # F
+    SIZE_LABELS = list(range(19, 39))  # 19-38
+    QTY_COL = 26   # Z
+    PRICE_COL = 27  # AA
+    AMT_COL = 28    # AB
+    LAST_COL_LTR = 'AB'
+
+    # Column widths
+    ws.column_dimensions['A'].width = 8   # Item No.
+    ws.column_dimensions['B'].width = 14  # item code
+    ws.column_dimensions['C'].width = 8   # Picture
+    ws.column_dimensions['D'].width = 16  # Materials
+    ws.column_dimensions['E'].width = 10  # Color
+    for i in range(20):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(SIZE_START_COL + i)].width = 4.5
+    ws.column_dimensions['Z'].width = 7   # Q'ty
+    ws.column_dimensions['AA'].width = 10  # Unit price
+    ws.column_dimensions['AB'].width = 12  # Amount
+
+    # === ROW 1: Company name ===
+    ws.merge_cells(f'A1:{LAST_COL_LTR}1')
+    ws.cell(1, 1, EMILY_INFO['company_en']).font = title_font
+    ws.cell(1, 1).alignment = center
+
+    # === ROW 2: Address ===
+    ws.merge_cells(f'A2:{LAST_COL_LTR}2')
+    ws.cell(2, 1, EMILY_INFO['address']).font = small_font
+    ws.cell(2, 1).alignment = center
+
+    # === ROW 3: Contact ===
+    ws.merge_cells(f'A3:{LAST_COL_LTR}3')
+    ws.cell(3, 1, BIS_INFO['contact']).font = small_font
+    ws.cell(3, 1).alignment = center
+
+    # === ROW 5: Title ===
+    ws.merge_cells(f'A5:{LAST_COL_LTR}5')
+    ws.cell(5, 1, 'PROFORMA INVOICE').font = subtitle_font
+    ws.cell(5, 1).alignment = center
+
+    # === ROWS 7-12: Bill-to / Ship-to / Invoice info ===
+    # Bill-to (left side, A7-A12)
+    ws.cell(7, 1, 'Bill To:').font = bold_font
+    bill_lines = BIS_INFO['bill_to'].split('\n')
+    for i, line in enumerate(bill_lines):
+        ws.cell(8 + i, 1, line).font = normal_font
+
+    # Ship-to (middle, E7-E12)
+    ws.cell(7, 5, 'Ship To:').font = bold_font
+    ship_lines = BIS_INFO['ship_to'].split('\n')
+    for i, line in enumerate(ship_lines):
+        ws.cell(8 + i, 5, line).font = normal_font
+
+    # Invoice info (right side, S7-S13)
+    po_no = pi_data.get('order_no', '')
+    # Strip PO prefix for invoice no field
+    po_num = re.sub(r'^PO', '', po_no).strip()
+    invoice_no = f'BIS-{po_num}' if po_num else 'BIS-'
+
+    ws.cell(7, 19, 'Invoice No.:').font = bold_font
+    ws.cell(7, 20, invoice_no).font = normal_font
+
+    ws.cell(8, 19, 'Invoice date:').font = bold_font
+    ws.cell(8, 20, pi_data.get('date', '') or datetime.now().strftime('%d-%B-%Y')).font = normal_font
+
+    ws.cell(10, 19, "Bisgaard's order no.:").font = bold_font
+    ws.cell(10, 20, po_num).font = normal_font
+
+    ws.cell(13, 19, 'Country of origin:').font = bold_font
+    ws.cell(13, 20, BIS_INFO['country_of_origin']).font = normal_font
+
+    # === ROWS 15-16: Column headers ===
+    # Merged headers
+    ws.merge_cells('A15:A16')
+    ws.cell(15, 1, 'Item No.').font = bold_font
+    ws.cell(15, 1).border = border
+    ws.cell(15, 1).alignment = center
+    ws.cell(16, 1).border = border
+
+    ws.merge_cells('B15:B16')
+    ws.cell(15, 2, 'item code').font = bold_font
+    ws.cell(15, 2).border = border
+    ws.cell(15, 2).alignment = center
+    ws.cell(16, 2).border = border
+
+    ws.merge_cells('C15:C16')
+    ws.cell(15, 3, 'Picture').font = bold_font
+    ws.cell(15, 3).border = border
+    ws.cell(15, 3).alignment = center
+    ws.cell(16, 3).border = border
+
+    ws.merge_cells('D15:D16')
+    ws.cell(15, 4, 'Materials').font = bold_font
+    ws.cell(15, 4).border = border
+    ws.cell(15, 4).alignment = center
+    ws.cell(16, 4).border = border
+
+    ws.merge_cells('E15:E16')
+    ws.cell(15, 5, 'Color').font = bold_font
+    ws.cell(15, 5).border = border
+    ws.cell(15, 5).alignment = center
+    ws.cell(16, 5).border = border
+
+    # Size header: "Size" merged across F15:Y15
+    ws.merge_cells('F15:Y15')
+    ws.cell(15, 6, 'Size').font = bold_font
+    ws.cell(15, 6).border = border
+    ws.cell(15, 6).alignment = center
+    # Individual size labels in row 16
+    for i, sz in enumerate(SIZE_LABELS):
+        col = SIZE_START_COL + i
+        ws.cell(16, col, f'{sz}#').font = bold_small
+        ws.cell(16, col).border = border
+        ws.cell(16, col).alignment = center
+        ws.cell(15, col).border = border  # top border for merged area
+
+    # Q'ty header
+    ws.merge_cells('Z15:Z16')
+    ws.cell(15, QTY_COL, "Q'ty\n(PRS)").font = bold_font
+    ws.cell(15, QTY_COL).border = border
+    ws.cell(15, QTY_COL).alignment = center
+    ws.cell(16, QTY_COL).border = border
+
+    # Unit price header
+    ws.merge_cells('AA15:AA16')
+    ws.cell(15, PRICE_COL, 'Unit price\n(USD)').font = bold_font
+    ws.cell(15, PRICE_COL).border = border
+    ws.cell(15, PRICE_COL).alignment = center
+    ws.cell(16, PRICE_COL).border = border
+
+    # Amount header
+    ws.merge_cells('AB15:AB16')
+    ws.cell(15, AMT_COL, 'Amount\n(USD)').font = bold_font
+    ws.cell(15, AMT_COL).border = border
+    ws.cell(15, AMT_COL).alignment = center
+    ws.cell(16, AMT_COL).border = border
+
+    # === DATA ROWS ===
+    # Group items by style_code+color to merge rows with different prices
+    from collections import OrderedDict
+    style_groups = OrderedDict()  # (style_code, color) -> [item1, item2, ...]
+    for item in pi_data.get('items', []):
+        sc = item.get('style_code', '')
+        color = item.get('color_name', '') or item.get('color_full', '')
+        key = (sc, color)
+        if key not in style_groups:
+            style_groups[key] = []
+        style_groups[key].append(item)
+
+    row = 17
+    data_start_row = row
+    prev_article = ''
+
+    for (style_code, color), items_group in style_groups.items():
+        num_rows = len(items_group)
+        first_row = row
+
+        # Determine article base (strip color suffix)
+        article = style_code
+        item_code = items_group[0].get('style', '') or items_group[0].get('sku', '') or f'{style_code}'
+
+        # Materials
+        mat_text = BIS_MATERIALS.get(article, '')
+        if not mat_text:
+            # Try prefix match
+            for prefix, mat in BIS_MATERIALS.items():
+                if article.startswith(prefix):
+                    mat_text = mat
+                    break
+            if not mat_text:
+                mat_text = 'Upper: textile\nLining: textile\nInsock: textile\nOutsole: rubber'
+
+        # Write each price-tier row
+        for i, item in enumerate(items_group):
+            # Size quantities
+            for si, sz in enumerate(SIZE_LABELS):
+                col = SIZE_START_COL + si
+                qty = item.get('sizes', {}).get(str(sz), '')
+                if qty:
+                    ws.cell(row, col, int(qty)).font = normal_font
+                ws.cell(row, col).border = border
+                ws.cell(row, col).alignment = center
+
+            # Q'ty = SUM formula
+            f_ltr = openpyxl.utils.get_column_letter(SIZE_START_COL)
+            y_ltr = openpyxl.utils.get_column_letter(SIZE_START_COL + 19)
+            ws.cell(row, QTY_COL).value = f'=SUM({f_ltr}{row}:{y_ltr}{row})'
+            ws.cell(row, QTY_COL).font = normal_font
+            ws.cell(row, QTY_COL).border = border
+            ws.cell(row, QTY_COL).alignment = center
+
+            # Unit price
+            price = item.get('price', 0)
+            ws.cell(row, PRICE_COL, price).font = normal_font
+            ws.cell(row, PRICE_COL).border = border
+            ws.cell(row, PRICE_COL).alignment = center
+            ws.cell(row, PRICE_COL).number_format = '#,##0.00'
+
+            # Amount = price * qty formula
+            aa_ltr = openpyxl.utils.get_column_letter(PRICE_COL)
+            z_ltr = openpyxl.utils.get_column_letter(QTY_COL)
+            ws.cell(row, AMT_COL).value = f'={aa_ltr}{row}*{z_ltr}{row}'
+            ws.cell(row, AMT_COL).font = normal_font
+            ws.cell(row, AMT_COL).border = border
+            ws.cell(row, AMT_COL).alignment = center
+            ws.cell(row, AMT_COL).number_format = '#,##0.00'
+
+            row += 1
+
+        last_row = row - 1
+
+        # Merge vertical cells for Item No., item code, Picture, Materials, Color
+        if num_rows > 1:
+            for c in [1, 2, 3, 4, 5]:
+                ws.merge_cells(start_row=first_row, start_column=c, end_row=last_row, end_column=c)
+        # Write merged values
+        # Item No. - only show if different from previous
+        ws.cell(first_row, 1, article if article != prev_article else article).font = normal_font
+        ws.cell(first_row, 1).border = border
+        ws.cell(first_row, 1).alignment = center
+
+        ws.cell(first_row, 2, item_code).font = normal_font
+        ws.cell(first_row, 2).border = border
+        ws.cell(first_row, 2).alignment = center
+
+        ws.cell(first_row, 3).border = border  # Picture (empty)
+        ws.cell(first_row, 3).alignment = center
+
+        ws.cell(first_row, 4, mat_text).font = small_font
+        ws.cell(first_row, 4).border = border
+        ws.cell(first_row, 4).alignment = left_top
+
+        ws.cell(first_row, 5, color).font = normal_font
+        ws.cell(first_row, 5).border = border
+        ws.cell(first_row, 5).alignment = center
+
+        # Set borders on merged cells bottom
+        if num_rows > 1:
+            for c in [1, 2, 3, 4, 5]:
+                ws.cell(last_row, c).border = border
+
+        prev_article = article
+
+    # === TOTAL ROW ===
+    total_row = row
+    ws.cell(total_row, QTY_COL - 1, 'TOTAL').font = bold_font
+    ws.cell(total_row, QTY_COL - 1).alignment = right_align
+
+    z_ltr = openpyxl.utils.get_column_letter(QTY_COL)
+    ws.cell(total_row, QTY_COL).value = f'=SUM({z_ltr}{data_start_row}:{z_ltr}{total_row - 1})'
+    ws.cell(total_row, QTY_COL).font = bold_font
+    ws.cell(total_row, QTY_COL).border = border
+    ws.cell(total_row, QTY_COL).alignment = center
+
+    ab_ltr = openpyxl.utils.get_column_letter(AMT_COL)
+    ws.cell(total_row, AMT_COL).value = f'=SUM({ab_ltr}{data_start_row}:{ab_ltr}{total_row - 1})'
+    ws.cell(total_row, AMT_COL).font = bold_font
+    ws.cell(total_row, AMT_COL).border = border
+    ws.cell(total_row, AMT_COL).alignment = center
+    ws.cell(total_row, AMT_COL).number_format = '#,##0.00'
+    row = total_row + 1
+
+    # === SAY TOTAL ===
+    total_amount = pi_data.get('total_amount', 0)
+    ws.merge_cells(f'A{row}:{LAST_COL_LTR}{row}')
+    ws.cell(row, 1, f'SAY TOTAL: USD {_amount_in_words(total_amount)} ONLY').font = small_font
+    row += 2
+
+    # === FOOTER ===
+    terms = pi_data.get('terms', {})
+
+    footer_lines = [
+        f"Brand: {BIS_INFO['brand']}",
+        f"Shipment date: {terms.get('shipment_date', '')}",
+        f"Delivery terms: {BIS_INFO['delivery_terms']}",
+        f"Port of loading: {BIS_INFO['port_of_loading']}",
+        f"Payment: {BIS_INFO['payment']}",
+    ]
+    for line in footer_lines:
+        ws.merge_cells(f'A{row}:{LAST_COL_LTR}{row}')
+        ws.cell(row, 1, line).font = normal_font
+        row += 1
+
+    row += 1
+    # Bank info
+    bank_lines = [
+        f"Bank name: {BIS_INFO['bank_name']}",
+        f"Bank address: {BIS_INFO['bank_address']}",
+        f"Beneficiary name: {EMILY_INFO['company_en']}",
+        f"Beneficiary address: {EMILY_INFO['address']}",
+        f"SWIFT Code: {BIS_INFO['swift']}",
+        f"Account No.: {BIS_INFO['account']}",
+    ]
+    for line in bank_lines:
+        ws.merge_cells(f'A{row}:{LAST_COL_LTR}{row}')
+        ws.cell(row, 1, line).font = normal_font
+        row += 1
+
+    row += 2
+    # Signatures
+    ws.cell(row, 1, 'BUYER:').font = bold_font
+    ws.cell(row, 11, 'SELLER:').font = bold_font
+    row += 1
+    ws.cell(row, 11, EMILY_INFO['company_en']).font = normal_font
+    row += 3
+    ws.cell(row, 1, 'Signature: ________________________').font = normal_font
+    ws.cell(row, 11, 'Signature: ________________________').font = normal_font
+    row += 1
+    ws.cell(row, 1, 'Date: ____________________________').font = normal_font
+    ws.cell(row, 11, 'Date: ____________________________').font = normal_font
+
+    # Print setup
+    try:
+        from openpyxl.worksheet.properties import PageSetupProperties
+        ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.page_setup.orientation = 'landscape'
+    except (ImportError, AttributeError):
+        pass
+
+    _apply_notes_to_workbook(wb, output_path, notes, 'BIS Proforma Invoice')
+    return output_path
+
+
+def _amount_in_words(amount):
+    """Convert amount to English words (simplified)."""
+    try:
+        dollars = int(amount)
+        cents = round((amount - dollars) * 100)
+        ones = ['', 'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE',
+                'TEN', 'ELEVEN', 'TWELVE', 'THIRTEEN', 'FOURTEEN', 'FIFTEEN', 'SIXTEEN',
+                'SEVENTEEN', 'EIGHTEEN', 'NINETEEN']
+        tens = ['', '', 'TWENTY', 'THIRTY', 'FORTY', 'FIFTY', 'SIXTY', 'SEVENTY', 'EIGHTY', 'NINETY']
+
+        def _w(n):
+            if n == 0: return ''
+            if n < 20: return ones[n]
+            if n < 100: return tens[n // 10] + (' ' + ones[n % 10] if n % 10 else '')
+            if n < 1000: return ones[n // 100] + ' HUNDRED' + (' ' + _w(n % 100) if n % 100 else '')
+            if n < 1000000: return _w(n // 1000) + ' THOUSAND' + (' ' + _w(n % 1000) if n % 1000 else '')
+            return _w(n // 1000000) + ' MILLION' + (' ' + _w(n % 1000000) if n % 1000000 else '')
+
+        result = _w(dollars)
+        if cents:
+            result += f' AND {_w(cents)} CENTS'
+        return result
+    except Exception:
+        return str(amount)
+
+
 def generate_po_excel(pi_data, output_path, pi_format='PR', notes=''):
     """Generate PO Excel — all in English, complete information. pi_format: customer format code (PR/BIS/MYL/custom)"""
+    # BIS format uses dedicated generator
+    if pi_format == 'BIS':
+        return _generate_bis_pi(pi_data, output_path, notes=notes)
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'Purchase Order'
