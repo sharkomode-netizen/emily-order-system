@@ -28,6 +28,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'uploads')
 app.config['OUTPUT_FOLDER'] = os.path.join(BASE_DIR, 'output')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+FEEDBACK_FILE = os.path.join(BASE_DIR, 'feedback.json')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
@@ -2876,11 +2877,48 @@ def clear_all():
     return redirect(url_for('index'))
 
 
+@app.route('/feedback', methods=['POST'])
+def submit_feedback():
+    """Save user feedback to JSON file"""
+    data = request.get_json(silent=True) or {}
+    msg = (data.get('message') or '').strip()
+    category = data.get('category', 'general').strip()
+    if not msg or len(msg) > 2000:
+        return jsonify({'ok': False, 'error': '反馈内容为空或过长'}), 400
+    # Load existing
+    feedbacks = []
+    if os.path.exists(FEEDBACK_FILE):
+        try:
+            with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f:
+                feedbacks = json.load(f)
+        except Exception:
+            feedbacks = []
+    feedbacks.append({
+        'id': len(feedbacks) + 1,
+        'message': msg,
+        'category': category,
+        'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'status': 'pending',
+    })
+    with open(FEEDBACK_FILE, 'w', encoding='utf-8') as f:
+        json.dump(feedbacks, f, ensure_ascii=False, indent=2)
+    return jsonify({'ok': True})
+
+
+@app.route('/feedback', methods=['GET'])
+def get_feedback():
+    """Read all feedback (for Claude Code monitoring)"""
+    if os.path.exists(FEEDBACK_FILE):
+        with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f:
+            return jsonify(json.load(f))
+    return jsonify([])
+
+
 @app.route('/api/health')
 def health():
     return jsonify({
         'status': 'ok',
-        'version': '2.1',
+        'version': '2.2',
         'ai_mode': 'api' if ANTHROPIC_API_KEY else 'cli',
         'timestamp': datetime.now().isoformat(),
     })
