@@ -18,6 +18,7 @@ import logging
 import signal
 from datetime import datetime
 from pathlib import Path
+from rule_engine import apply_parse_rules, get_prompt_patches
 
 # Logging setup
 _log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.log')
@@ -2431,6 +2432,7 @@ def generate_ci_from_pi(pi_path, output_path, notes=''):
     """
     pi_wb = openpyxl.load_workbook(pi_path, data_only=True)
     ci_data = _parse_pi_for_ci(pi_wb)
+    ci_data = apply_parse_rules(ci_data, 'pi_to_ci')
     _generate_ci_excel(ci_data, output_path)
     wb = openpyxl.load_workbook(output_path)
     _apply_notes_to_workbook(wb, output_path, notes, 'Commercial Invoice')
@@ -3731,6 +3733,9 @@ def pi_to_po():
             flash('无法解析PO文件内容，请检查文件格式是否正确', 'error')
             return redirect(url_for('index'))
 
+        # Apply learned correction rules
+        pi_data = apply_parse_rules(pi_data, 'po_to_pi')
+
         order_id = pi_data.get('invoice_no') or pi_data.get('order_no') or 'PO'
         order_id = re.sub(r'[/\\:*?"<>|]', '-', order_id)  # 清理文件名非法字符
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -3790,6 +3795,9 @@ def po_to_packing():
         if not pi_data or not pi_data.get('items'):
             flash('无法解析PO文件内容，请检查文件格式是否正确', 'error')
             return redirect(url_for('index'))
+
+        # Apply learned correction rules
+        pi_data = apply_parse_rules(pi_data, 'pi_to_packing')
 
         order_id = pi_data.get('invoice_no') or pi_data.get('order_no') or 'PO'
         order_id = re.sub(r'[/\\:*?"<>|]', '-', str(order_id))
@@ -3873,6 +3881,7 @@ def materials_to_production():
             flash('无法识别手写内容，请确保照片清晰', 'error')
             return redirect(url_for('index'))
 
+        material_data = apply_parse_rules(material_data, 'materials_to_production')
         order_id = material_data.get('order_no', 'ORDER')
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -3916,6 +3925,7 @@ def quotation_to_cog():
             flash('无法解析报价单，请检查文件格式', 'error')
             return redirect(url_for('index'))
 
+        quotation_data = apply_parse_rules(quotation_data, 'quotation_to_cog')
         season = quotation_data.get('season', 'SS')
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         output_name = f"{season}_SMS_COG_OVERVIEW--EMILY_{timestamp}.xlsx"
@@ -4073,6 +4083,14 @@ def submit_feedback():
     feedbacks.append(fb_entry)
     with open(FEEDBACK_FILE, 'w', encoding='utf-8') as f:
         json.dump(feedbacks, f, ensure_ascii=False, indent=2)
+
+    # Auto-process actionable feedback in background
+    if category in ('training', 'data', 'format', 'feature'):
+        import threading
+        from feedback_processor import process_single
+        threading.Thread(target=process_single, args=(fb_id,), daemon=True).start()
+        logger.info(f"Feedback #{fb_id} queued for auto-processing")
+
     return jsonify({'ok': True})
 
 
@@ -4124,4 +4142,14 @@ if __name__ == '__main__':
     print(f"  AI模式: {'API (Anthropic)' if ANTHROPIC_API_KEY else 'CLI (Claude Code)'}")
     print(f"  环境: {'开发' if debug else '生产'}")
     print(f"{'='*50}\n")
+
+    # Process any pending feedback on startup
+    try:
+        import threading
+        from feedback_processor import process_all_pending
+        threading.Thread(target=process_all_pending, daemon=True).start()
+        logger.info("Started background processing of pending feedback")
+    except Exception as e:
+        logger.warning(f"Could not start feedback processing: {e}")
+
     app.run(host='0.0.0.0', port=port, debug=debug)
