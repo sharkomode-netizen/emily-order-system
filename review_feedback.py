@@ -9,7 +9,7 @@ import json, sys, os
 FEEDBACK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'feedback.json')
 
 # 可操作的分类 - 只有这些才会被标记为需要处理
-ACTIONABLE_CATS = {'data', 'format', 'feature'}
+ACTIONABLE_CATS = {'data', 'format', 'feature', 'notes'}
 
 # 危险关键词 - 含这些内容的反馈自动忽略
 DANGER_KEYWORDS = [

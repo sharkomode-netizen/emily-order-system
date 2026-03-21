@@ -1197,7 +1197,111 @@ def _format_po_no(pi_data):
     return ''
 
 
-def generate_po_excel(pi_data, output_path, pi_format='PR'):
+def _log_notes(notes, file_type, output_name):
+    """Log notes to feedback.json for Claude Code to review and potentially improve the system."""
+    if not notes or not notes.strip():
+        return
+    feedbacks = []
+    if os.path.exists(FEEDBACK_FILE):
+        try:
+            with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f:
+                feedbacks = json.load(f)
+        except Exception:
+            feedbacks = []
+    feedbacks.append({
+        'id': len(feedbacks) + 1,
+        'message': notes,
+        'category': 'notes',
+        'source': file_type,
+        'output': output_name,
+        'images': [],
+        'files': [],
+        'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'status': 'pending',
+    })
+    try:
+        with open(FEEDBACK_FILE, 'w', encoding='utf-8') as f:
+            json.dump(feedbacks, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _apply_notes_to_workbook(wb, output_path, notes, file_type='Excel'):
+    """Use AI to apply user notes to a generated workbook.
+    Only processes safe, data-related modifications."""
+    if not notes or not notes.strip():
+        wb.save(output_path)
+        return
+    _log_notes(notes, file_type, os.path.basename(output_path))
+    # Save temp version first
+    wb.save(output_path)
+    # Build a summary of current workbook structure for AI
+    summary_parts = []
+    for ws in wb.worksheets:
+        summary_parts.append(f"Sheet: {ws.title}, rows: {ws.max_row}, cols: {ws.max_column}")
+        # Sample first 5 rows
+        for r in range(1, min(6, ws.max_row + 1)):
+            vals = []
+            for c in range(1, min(ws.max_column + 1, 20)):
+                v = ws.cell(r, c).value
+                if v is not None:
+                    vals.append(f"{openpyxl.utils.get_column_letter(c)}{r}={v}")
+            if vals:
+                summary_parts.append("  " + " | ".join(vals))
+    structure = "\n".join(summary_parts)
+
+    prompt = f"""You are modifying a generated {file_type} file based on user notes.
+
+Current file structure:
+{structure}
+
+User notes: {notes}
+
+Generate Python code using openpyxl to modify the workbook `wb` (already loaded).
+Only output the Python code block, no explanation.
+Rules:
+- Only make changes the user explicitly requested
+- Do NOT delete existing data
+- Do NOT add malicious content
+- Do NOT import os, subprocess, or any system modules
+- Only use openpyxl operations (cell values, styles, insert/delete rows/cols, merge)
+- Variable `wb` is the workbook, `ws` is wb.active
+- If the request is unclear or dangerous, output: # SKIP
+
+Output format:
+```python
+ws = wb.active
+# your code here
+```"""
+
+    try:
+        result = call_ai(prompt, timeout=30)
+        # Extract code block
+        code_match = re.search(r'```python\s*\n(.*?)```', result, re.DOTALL)
+        if not code_match:
+            return
+        code = code_match.group(1).strip()
+        if '# SKIP' in code:
+            return
+        # Safety check - block dangerous imports/calls
+        dangerous = ['import os', 'import sys', 'import subprocess', 'exec(', 'eval(',
+                      '__import__', 'open(', 'system(', 'popen(', 'remove(', 'unlink(']
+        if any(d in code for d in dangerous):
+            return
+        # Execute in restricted namespace
+        safe_globals = {
+            'wb': wb, 'openpyxl': openpyxl,
+            'Font': Font, 'Alignment': Alignment, 'Border': Border,
+            'Side': Side, 'PatternFill': PatternFill,
+        }
+        exec(code, safe_globals)
+        wb.save(output_path)
+    except Exception:
+        # If AI modification fails, keep original file
+        pass
+
+
+def generate_po_excel(pi_data, output_path, pi_format='PR', notes=''):
     """Generate PO Excel — all in English, complete information. pi_format: customer format code (PR/BIS/MYL/custom)"""
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1506,14 +1610,14 @@ def generate_po_excel(pi_data, output_path, pi_format='PR'):
     except (ImportError, AttributeError):
         pass
 
-    wb.save(output_path)
+    _apply_notes_to_workbook(wb, output_path, notes, 'PI Excel')
     return output_path
 
 
 # ============================================================
 # PO → Packing List
 # ============================================================
-def generate_packing_list_excel(pi_data, output_path, fty_order=''):
+def generate_packing_list_excel(pi_data, output_path, fty_order='', notes=''):
     """Generate MYL-style Packing List Excel from parsed PO data.
     Each item (style+color) gets a block of rows with box distribution.
     NW/GW left blank for manual fill."""
@@ -1905,14 +2009,14 @@ def generate_packing_list_excel(pi_data, output_path, fty_order=''):
     except (ImportError, AttributeError):
         pass
 
-    wb.save(output_path)
+    _apply_notes_to_workbook(wb, output_path, notes, 'Packing List')
     return output_path
 
 
 # ============================================================
 # PI → CI (Commercial Invoice)
 # ============================================================
-def generate_ci_from_pi(pi_path, output_path):
+def generate_ci_from_pi(pi_path, output_path, notes=''):
     """Convert PI Excel to CI Excel.
     - Change title from PROFORMA INVOICE to COMMERCIAL INVOICE
     - Insert shipping detail rows after header
@@ -1925,7 +2029,7 @@ def generate_ci_from_pi(pi_path, output_path):
     for ws in wb.worksheets:
         _convert_sheet_pi_to_ci(ws, wb)
 
-    wb.save(output_path)
+    _apply_notes_to_workbook(wb, output_path, notes, 'Commercial Invoice')
     return output_path
 
 
@@ -2094,7 +2198,7 @@ def parse_handwritten_materials(image_paths):
     return _parse_ai_json(result)
 
 
-def generate_production_sheet_html(material_data):
+def generate_production_sheet_html(material_data, notes=''):
     """生成生产指令单HTML"""
     order_no = material_data.get('order_no', 'MYL-XXXX')
     date = material_data.get('date', datetime.now().strftime('%Y/%m/%d'))
@@ -2447,7 +2551,7 @@ def _make_thumbnail(src_path, max_w=80, max_h=60):
         return None
 
 
-def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
+def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard', notes=''):
     """将报价单展开为 COG Overview Excel（每颜色×每尺码=一行，含产品图片）"""
     from openpyxl.drawing.image import Image as XlImage
 
@@ -2577,7 +2681,7 @@ def generate_cog_excel(quotation_data, output_path, brand_prefix='bisgaard'):
                 except Exception:
                     pass
 
-    wb.save(output_path)
+    _apply_notes_to_workbook(wb, output_path, notes, 'COG Overview')
     return row - 7  # 返回数据行数
 
 
@@ -2637,11 +2741,8 @@ def pi_to_po():
         output_name = f"PO_{pi_format}_{order_id}_{timestamp}.xlsx"
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
 
-        generate_po_excel(pi_data, output_path, pi_format=pi_format)
-
-        json_path = os.path.join(app.config['OUTPUT_FOLDER'], f"PO_{order_id}_{timestamp}_data.json")
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(pi_data, f, ensure_ascii=False, indent=2)
+        notes = request.form.get('notes', '').strip()
+        generate_po_excel(pi_data, output_path, pi_format=pi_format, notes=notes)
 
         currency = pi_data.get('currency') or 'USD'
         total_pcs = pi_data.get('total_pieces') or 0
@@ -2693,7 +2794,8 @@ def po_to_packing():
         output_name = f"PackingList_{order_id}_{timestamp}.xlsx"
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
 
-        generate_packing_list_excel(pi_data, output_path, fty_order=fty_order)
+        notes = request.form.get('notes', '').strip()
+        generate_packing_list_excel(pi_data, output_path, fty_order=fty_order, notes=notes)
 
         total_pcs = pi_data.get('total_pieces') or 0
         item_count = len(pi_data.get('items', []))
@@ -2735,7 +2837,8 @@ def pi_to_ci():
         output_name = f"CI_{order_id}_{timestamp}.xlsx"
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
 
-        generate_ci_from_pi(filepath, output_path)
+        notes = request.form.get('notes', '').strip()
+        generate_ci_from_pi(filepath, output_path, notes=notes)
 
         flash(f'CI 已生成：{output_name}', 'success')
 
@@ -2770,17 +2873,13 @@ def materials_to_production():
         order_id = material_data.get('order_no', 'ORDER')
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-        html_content = generate_production_sheet_html(material_data)
+        notes = request.form.get('notes', '').strip()
+        html_content = generate_production_sheet_html(material_data, notes=notes)
 
         html_name = f"Production_{order_id}_{timestamp}.html"
         html_path = os.path.join(app.config['OUTPUT_FOLDER'], html_name)
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
-
-        json_name = f"Production_{order_id}_{timestamp}_data.json"
-        json_path = os.path.join(app.config['OUTPUT_FOLDER'], json_name)
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(material_data, f, ensure_ascii=False, indent=2)
 
         mat_count = len(material_data.get('materials', []))
         hw_count = len(material_data.get('hardware', []))
@@ -2820,7 +2919,8 @@ def quotation_to_cog():
         output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
 
         brand_prefix = request.form.get('brand_prefix', 'bisgaard').strip()
-        total_rows = generate_cog_excel(quotation_data, output_path, brand_prefix=brand_prefix)
+        notes = request.form.get('notes', '').strip()
+        total_rows = generate_cog_excel(quotation_data, output_path, brand_prefix=brand_prefix, notes=notes)
 
         entry_count = len(quotation_data['entries'])
         flash(f'COG Overview 已生成：{output_name}（{entry_count} 个款式，{total_rows} 行数据）', 'success')

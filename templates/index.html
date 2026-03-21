@@ -331,6 +331,17 @@ body {
     background: none; border: none; color: var(--error); cursor: pointer;
     font-size: 14px; padding: 0 2px;
 }
+.notes-area {
+    margin-bottom: 12px;
+}
+.notes-area textarea {
+    width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 12px; resize: vertical;
+    font-family: inherit; line-height: 1.5; min-height: 36px; max-height: 120px;
+}
+.notes-area textarea:focus { border-color: var(--primary); outline: none; }
+.notes-area textarea::placeholder { color: var(--text-dim); opacity: 0.6; }
+.notes-label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; display: flex; align-items: center; gap: 4px; }
 </style>
 </head>
 <body>
@@ -397,6 +408,10 @@ body {
                 <div class="formats">支持 Excel (.xlsx / .xls)、PDF 和图片 (JPG/PNG)</div>
             </div>
             <div class="file-list" id="piFiles"></div>
+            <div class="notes-area">
+                <div class="notes-label">&#128221; 备注（AI会根据备注调整输出）</div>
+                <textarea name="notes" rows="1" placeholder="如：加上DELIVERY TERMS列、修改抬头为XXX..."></textarea>
+            </div>
             <button type="submit" class="btn btn-primary btn-block" id="piBtn" disabled>生成 PI</button>
         </form>
     </div>
@@ -417,6 +432,10 @@ body {
                 <div class="formats">支持 Excel (.xlsx / .xls)、PDF 和图片 (JPG/PNG)</div>
             </div>
             <div class="file-list" id="packFiles"></div>
+            <div class="notes-area">
+                <div class="notes-label">&#128221; 备注（AI会根据备注调整输出）</div>
+                <textarea name="notes" rows="1" placeholder="如：每箱上限改为20双、增加N.W.列..."></textarea>
+            </div>
             <button type="submit" class="btn btn-primary btn-block" id="packBtn" disabled>生成 Packing List</button>
         </form>
     </div>
@@ -433,6 +452,10 @@ body {
                 <div class="formats">支持 Excel (.xlsx / .xls)</div>
             </div>
             <div class="file-list" id="ciFiles"></div>
+            <div class="notes-area">
+                <div class="notes-label">&#128221; 备注（AI会根据备注调整输出）</div>
+                <textarea name="notes" rows="1" placeholder="如：港口改为SHANGHAI、增加CONTAINER SIZE..."></textarea>
+            </div>
             <button type="submit" class="btn btn-primary btn-block" id="ciBtn" disabled>生成 CI</button>
         </form>
     </div>
@@ -449,6 +472,10 @@ body {
                 <div class="formats">支持 JPG / PNG &bull; AI识别手写内容</div>
             </div>
             <div class="file-list" id="matFiles"></div>
+            <div class="notes-area">
+                <div class="notes-label">&#128221; 备注（AI会根据备注调整输出）</div>
+                <textarea name="notes" rows="1" placeholder="如：增加交期列、颜色用中文显示..."></textarea>
+            </div>
             <button type="submit" class="btn btn-primary btn-block" id="matBtn" disabled>生成生产指令单</button>
         </form>
     </div>
@@ -466,6 +493,10 @@ body {
             </div>
             <div class="file-list" id="cogFiles"></div>
             <input type="text" name="brand_prefix" class="brand-input" placeholder="品牌前缀（如 bisgaard）" value="bisgaard">
+            <div class="notes-area">
+                <div class="notes-label">&#128221; 备注（AI会根据备注调整输出）</div>
+                <textarea name="notes" rows="1" placeholder="如：只保留某些尺码、增加MOQ列..."></textarea>
+            </div>
             <button type="submit" class="btn btn-primary btn-block" id="cogBtn" disabled>生成 COG Overview</button>
         </form>
     </div>
