@@ -8,3 +8,6 @@ output/*
 .env
 *.log
 .DS_Store
+feedback.json
+feedback_images/
+feedback_files/

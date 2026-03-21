@@ -2877,14 +2877,25 @@ def clear_all():
     return redirect(url_for('index'))
 
 
+FEEDBACK_IMG_DIR = os.path.join(BASE_DIR, 'feedback_images')
+FEEDBACK_FILE_DIR = os.path.join(BASE_DIR, 'feedback_files')
+os.makedirs(FEEDBACK_IMG_DIR, exist_ok=True)
+os.makedirs(FEEDBACK_FILE_DIR, exist_ok=True)
+
+
 @app.route('/feedback', methods=['POST'])
 def submit_feedback():
-    """Save user feedback to JSON file"""
+    """Save user feedback with optional images"""
     data = request.get_json(silent=True) or {}
     msg = (data.get('message') or '').strip()
     category = data.get('category', 'general').strip()
-    if not msg or len(msg) > 2000:
-        return jsonify({'ok': False, 'error': '反馈内容为空或过长'}), 400
+    images = data.get('images') or []
+    if not msg and not images:
+        return jsonify({'ok': False, 'error': '反馈内容为空'}), 400
+    if len(msg) > 2000:
+        return jsonify({'ok': False, 'error': '反馈内容过长'}), 400
+    if len(images) > 5:
+        images = images[:5]
     # Load existing
     feedbacks = []
     if os.path.exists(FEEDBACK_FILE):
@@ -2893,10 +2904,52 @@ def submit_feedback():
                 feedbacks = json.load(f)
         except Exception:
             feedbacks = []
+    fb_id = len(feedbacks) + 1
+    # Save images
+    saved_images = []
+    for i, img in enumerate(images):
+        img_data = img.get('data', '')
+        if not img_data or ',' not in img_data:
+            continue
+        header, b64 = img_data.split(',', 1)
+        ext = 'jpg'
+        if 'png' in header:
+            ext = 'png'
+        fname = f'fb_{fb_id}_{i+1}.{ext}'
+        fpath = os.path.join(FEEDBACK_IMG_DIR, fname)
+        try:
+            with open(fpath, 'wb') as f:
+                f.write(base64.b64decode(b64))
+            saved_images.append(fname)
+        except Exception:
+            pass
+    # Save attached files
+    attached_files = data.get('files') or []
+    if len(attached_files) > 3:
+        attached_files = attached_files[:3]
+    ALLOWED_EXT = {'.xlsx', '.xls', '.pdf', '.csv', '.json', '.txt'}
+    saved_files = []
+    for i, af in enumerate(attached_files):
+        af_data = af.get('data', '')
+        af_name = af.get('name', f'file_{i}')
+        ext = os.path.splitext(af_name)[1].lower()
+        if ext not in ALLOWED_EXT or ',' not in af_data:
+            continue
+        _, b64 = af_data.split(',', 1)
+        safe_name = f'fb_{fb_id}_{i+1}{ext}'
+        fpath = os.path.join(FEEDBACK_FILE_DIR, safe_name)
+        try:
+            with open(fpath, 'wb') as f:
+                f.write(base64.b64decode(b64))
+            saved_files.append({'name': af_name, 'path': safe_name})
+        except Exception:
+            pass
     feedbacks.append({
-        'id': len(feedbacks) + 1,
+        'id': fb_id,
         'message': msg,
         'category': category,
+        'images': saved_images,
+        'files': saved_files,
         'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'status': 'pending',
     })
@@ -2912,6 +2965,26 @@ def get_feedback():
         with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f:
             return jsonify(json.load(f))
     return jsonify([])
+
+
+@app.route('/feedback/image/<filename>')
+def feedback_image(filename):
+    """Serve feedback images"""
+    safe = os.path.basename(filename)
+    fpath = os.path.join(FEEDBACK_IMG_DIR, safe)
+    if os.path.isfile(fpath):
+        return send_file(fpath)
+    return 'Not found', 404
+
+
+@app.route('/feedback/file/<filename>')
+def feedback_file(filename):
+    """Serve feedback attached files"""
+    safe = os.path.basename(filename)
+    fpath = os.path.join(FEEDBACK_FILE_DIR, safe)
+    if os.path.isfile(fpath):
+        return send_file(fpath, as_attachment=True)
+    return 'Not found', 404
 
 
 @app.route('/api/health')
